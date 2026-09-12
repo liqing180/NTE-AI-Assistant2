@@ -7,6 +7,7 @@ import android.graphics.PixelFormat
 import android.os.IBinder
 import android.provider.Settings
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -103,11 +104,30 @@ class AuctionOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner
                     },
                     onClose = ::stopSelf,
                     onDrag = ::moveBy,
+                    onWarehouseSnapshot = ::captureWarehouseSnapshot,
                 )
             }
         }
         composeView = view
         windowManager.addView(view, layoutParams)
+    }
+
+    /**
+     * 截图前临时隐藏悬浮窗，避免面板本身遮住仓库格子。
+     * 隐藏后等待两帧左右再发起一次性截图请求，随后恢复悬浮窗。
+     */
+    private fun captureWarehouseSnapshot() {
+        val view = composeView ?: run {
+            AuctionStateStore.requestWarehouseSnapshot()
+            return
+        }
+        view.visibility = View.INVISIBLE
+        view.postDelayed({
+            AuctionStateStore.requestWarehouseSnapshot()
+        }, 120L)
+        view.postDelayed({
+            view.visibility = View.VISIBLE
+        }, 420L)
     }
 
     private fun moveBy(dx: Int, dy: Int) {
