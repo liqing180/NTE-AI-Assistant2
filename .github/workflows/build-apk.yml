@@ -1,0 +1,94 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "APK build type"
+        required: true
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - release
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: Build ${{ inputs.build_type }} APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android API 37
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-37"
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Run core tests
+        shell: bash
+        run: gradle :core:test --stacktrace
+
+      - name: Build Debug APK
+        if: ${{ inputs.build_type == 'debug' }}
+        shell: bash
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Build Release APK (unsigned)
+        if: ${{ inputs.build_type == 'release' }}
+        shell: bash
+        run: gradle :app:assembleRelease --stacktrace
+
+      - name: Prepare APK artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ "${{ inputs.build_type }}" = "debug" ]; then
+            cp app/build/outputs/apk/debug/app-debug.apk dist/NTE-Auction-Assistant-debug.apk
+          else
+            cp app/build/outputs/apk/release/app-release-unsigned.apk dist/NTE-Auction-Assistant-release-unsigned.apk
+          fi
+          ls -lh dist
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NTE-Auction-Assistant-${{ inputs.build_type }}-${{ github.run_number }}
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Build summary
+        shell: bash
+        run: |
+          {
+            echo "## APK build complete"
+            echo
+            echo "- Build type: **${{ inputs.build_type }}**"
+            echo "- Core tests: **passed**"
+            echo "- Download: open this workflow run and download the artifact under **Artifacts**"
+            if [ "${{ inputs.build_type }}" = "release" ]; then
+              echo "- Note: release APK is **unsigned** and must be signed before normal distribution/install."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
