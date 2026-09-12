@@ -146,13 +146,14 @@ class WarehouseSnapshotRecognizer {
             if (column !in 0 until columns || column + itemWidth > columns) return@mapNotNull null
             if (localRow !in 0 until visibleRows || localRow + itemHeight > visibleRows) return@mapNotNull null
 
-            // 中段滚动时，接触 viewport 上下边界的轮廓可能只是被裁掉的半个藏品。
-            if (viewportStartRow > 0 && contour.top <= gridTop + cellSize * 0.18f) {
+            // 只有位于滚动中段时才丢弃触边轮廓。诊断包证明顶部 viewport 的最后一行
+            // 本身就是完整可见行，旧逻辑会把第 9/10 行合法藏品全部误判为“被裁切”。
+            // 顶部/底部极限位置允许触边项进入，后续状态合并仍有 edge guard 防止误删除。
+            val inMiddleViewport = scrollRatio > EDGE_SCROLL_EPSILON && scrollRatio < 1.0 - EDGE_SCROLL_EPSILON
+            if (inMiddleViewport && contour.top <= gridTop + cellSize * EDGE_TOUCH_FRACTION) {
                 return@mapNotNull null
             }
-            if (viewportStartRow + visibleRows < totalRows &&
-                contour.bottom >= gridBottom - cellSize * 0.18f
-            ) {
+            if (inMiddleViewport && contour.bottom >= gridBottom - cellSize * EDGE_TOUCH_FRACTION) {
                 return@mapNotNull null
             }
 
@@ -414,5 +415,10 @@ class WarehouseSnapshotRecognizer {
 
     private fun luma(color: Int): Int {
         return (Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114) / 1000
+    }
+
+    private companion object {
+        const val EDGE_SCROLL_EPSILON = 0.035
+        const val EDGE_TOUCH_FRACTION = 0.18f
     }
 }
