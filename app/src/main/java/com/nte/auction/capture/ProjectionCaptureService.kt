@@ -132,16 +132,25 @@ class ProjectionCaptureService : Service() {
                 val cropped = Bitmap.createBitmap(padded, 0, 0, width, height)
                 if (cropped !== padded) padded.recycle()
 
+                // Some Android 16/OEM combinations return a portrait MediaProjection
+                // buffer while the landscape game is already rendered correctly in a
+                // centered letterboxed band. Crop that active band before recognition;
+                // rotating the full bitmap would destroy the game orientation.
+                val normalized = FrameNormalizer.normalize(cropped)
+                val frame = normalized.bitmap
+
                 if (AuctionStateStore.consumeWarehouseSnapshotRequest()) {
                     val frameMetadata = buildString {
                         append(captureInfo)
                         appendLine("image=${image.width}x${image.height} format=${image.format} timestamp=${image.timestamp}")
                         appendLine("planePixelStride=$pixelStride rowStride=$rowStride rowPadding=$rowPadding paddedWidth=$paddedWidth")
                         appendLine("croppedBitmap=${cropped.width}x${cropped.height} config=${cropped.config}")
+                        appendLine("normalizerChanged=${normalized.changed} sourceRect=${normalized.sourceRect} reason=${normalized.reason}")
+                        appendLine("normalizedBitmap=${frame.width}x${frame.height} config=${frame.config}")
                     }
-                    WarehouseDiagnostics.recordCapture(cropped, frameMetadata)
+                    WarehouseDiagnostics.recordCapture(frame, frameMetadata)
 
-                    val attempt = runCatching { warehouseRecognizer.recognize(cropped) }
+                    val attempt = runCatching { warehouseRecognizer.recognize(frame) }
                     val result = attempt.getOrNull()
                     if (result == null) {
                         val error = attempt.exceptionOrNull()
@@ -154,7 +163,7 @@ class ProjectionCaptureService : Service() {
                             error = error,
                         )
                         AuctionStateStore.failWarehouseSnapshot(
-                            "未识别到仓库：截图 ${cropped.width}×${cropped.height}；请点“导出诊断包”发给开发者"
+                            "未识别到仓库：截图 ${frame.width}×${frame.height}；请点“导出诊断包”发给开发者"
                         )
                     } else {
                         WarehouseDiagnostics.recordRecognition(
@@ -164,7 +173,8 @@ class ProjectionCaptureService : Service() {
                     }
                 }
 
-                FrameHub.offer(cropped)
+                if (frame !== cropped) cropped.recycle()
+                FrameHub.offer(frame)
             } finally {
                 image.close()
             }
