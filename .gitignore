@@ -1,0 +1,33 @@
+# Gradle / Android build outputs
+.gradle/
+**/build/
+
+# Android local SDK configuration
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# Signing materials - never commit
+keystore/
+*.jks
+*.keystore
+*.p12
+
+# Generated packages
+*.apk
+*.aab
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Runtime captures / logs
+captures/
+runtime/
+*.log
+
+# Local direct Kotlin test output
+.build/
