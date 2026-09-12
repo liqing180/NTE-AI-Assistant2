@@ -10,6 +10,8 @@ import android.view.Gravity
 import android.view.WindowManager
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -25,15 +27,12 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.nte.auction.ui.AuctionOverlayContent
 import com.nte.auction.ui.AuctionStateStore
 
-/**
- * 真正显示在游戏上方的悬浮窗。
- * 只负责窗口生命周期和位置，业务状态全部来自 AuctionStateStore。
- */
+/** 真正显示在游戏上方的悬浮窗。 */
 class AuctionOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner {
     private lateinit var windowManager: WindowManager
     private var composeView: ComposeView? = null
     private var params: WindowManager.LayoutParams? = null
-    private var collapsed = false
+    private var collapsed by mutableStateOf(false)
 
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val savedStateController = SavedStateRegistryController.create(this)
@@ -67,9 +66,7 @@ class AuctionOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner
     }
 
     override fun onDestroy() {
-        composeView?.let { view ->
-            runCatching { windowManager.removeView(view) }
-        }
+        composeView?.let { view -> runCatching { windowManager.removeView(view) } }
         composeView = null
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         store.clear()
@@ -102,18 +99,7 @@ class AuctionOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner
                     collapsed = collapsed,
                     onToggleCollapsed = {
                         collapsed = !collapsed
-                        // Compose 读取的是 Service 字段，强制重建 Composition 让 WRAP_CONTENT 同步刷新。
-                        setContent {
-                            val refreshed by AuctionStateStore.state.collectAsState()
-                            AuctionOverlayContent(
-                                state = refreshed,
-                                collapsed = collapsed,
-                                onToggleCollapsed = ::toggleCollapsed,
-                                onClose = ::stopSelf,
-                                onDrag = ::moveBy,
-                            )
-                        }
-                        updateWindowSize()
+                        post { requestLayout() }
                     },
                     onClose = ::stopSelf,
                     onDrag = ::moveBy,
@@ -124,34 +110,11 @@ class AuctionOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner
         windowManager.addView(view, layoutParams)
     }
 
-    private fun toggleCollapsed() {
-        collapsed = !collapsed
-        composeView?.setContent {
-            val state by AuctionStateStore.state.collectAsState()
-            AuctionOverlayContent(
-                state = state,
-                collapsed = collapsed,
-                onToggleCollapsed = ::toggleCollapsed,
-                onClose = ::stopSelf,
-                onDrag = ::moveBy,
-            )
-        }
-        updateWindowSize()
-    }
-
     private fun moveBy(dx: Int, dy: Int) {
         val p = params ?: return
         val view = composeView ?: return
         p.x += dx
         p.y += dy
-        windowManager.updateViewLayout(view, p)
-    }
-
-    private fun updateWindowSize() {
-        val p = params ?: return
-        val view = composeView ?: return
-        p.width = WindowManager.LayoutParams.WRAP_CONTENT
-        p.height = WindowManager.LayoutParams.WRAP_CONTENT
         windowManager.updateViewLayout(view, p)
     }
 
