@@ -129,12 +129,15 @@ class ProjectionCaptureService : Service() {
     /**
      * 某些 Android 设备在横屏游戏中仍会把 MediaProjection 缓冲区按竖屏物理方向
      * 提供（例如 720×1570），画面依赖 90° 显示矩阵才是用户看到的横屏。
-     * 仓库识别器工作在横屏坐标系，因此这里在原图失败后自动尝试两个 90° 方向。
+     *
+     * 两个旋转方向都要尝试：错误方向偶尔也会把界面亮边误识别成滚动条，所以不能
+     * 采用“第一个非 null”。优先选择总行数大于可见行数、识别到有效藏品更多的候选。
      */
     private fun recognizeWarehouseFrame(bitmap: Bitmap): WarehouseSnapshotRecognizer.Result? {
         warehouseRecognizer.recognize(bitmap)?.let { return it }
         if (bitmap.width >= bitmap.height) return null
 
+        val candidates = mutableListOf<WarehouseSnapshotRecognizer.Result>()
         val rotations = floatArrayOf(90f, -90f)
         for (degrees in rotations) {
             val matrix = Matrix().apply { postRotate(degrees) }
@@ -147,14 +150,19 @@ class ProjectionCaptureService : Service() {
                 matrix,
                 false,
             )
-            val result = try {
-                warehouseRecognizer.recognize(rotated)
+            try {
+                warehouseRecognizer.recognize(rotated)?.let(candidates::add)
             } finally {
                 if (rotated !== bitmap && !rotated.isRecycled) rotated.recycle()
             }
-            if (result != null) return result
         }
-        return null
+
+        return candidates.maxWithOrNull(
+            compareBy<WarehouseSnapshotRecognizer.Result> {
+                if (it.totalRows > it.visibleRows) 1 else 0
+            }.thenBy { it.items.size }
+                .thenBy { it.totalRows }
+        )
     }
 
     private fun buildNotification(): Notification {
