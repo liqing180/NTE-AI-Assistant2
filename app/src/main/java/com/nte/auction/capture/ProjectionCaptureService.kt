@@ -24,6 +24,7 @@ class ProjectionCaptureService : Service() {
     private var imageReader: ImageReader? = null
     private var lastEmitMs = 0L
     private val warehouseRecognizer = WarehouseSnapshotRecognizer()
+    private var captureInfo: String = "capture not initialized"
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -64,11 +65,6 @@ class ProjectionCaptureService : Service() {
 
     private data class CaptureSize(val width: Int, val height: Int)
 
-    /**
-     * WindowMetrics 属于本应用窗口。悬浮窗从竖屏 Activity 启动后切回横屏游戏时，
-     * 某些 ROM 仍会返回 1080x2354，导致 VirtualDisplay 也被错误创建成竖屏。
-     * 这里直接读取物理 Display + 当前 rotation，得到游戏真正的屏幕方向。
-     */
     @Suppress("DEPRECATION")
     private fun resolveCaptureSize(): CaptureSize {
         val display = getSystemService(WindowManager::class.java).defaultDisplay
@@ -80,6 +76,23 @@ class ProjectionCaptureService : Service() {
         return when (display.rotation) {
             Surface.ROTATION_90, Surface.ROTATION_270 -> CaptureSize(naturalLong, naturalShort)
             else -> CaptureSize(naturalShort, naturalLong)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun buildCaptureInfo(width: Int, height: Int, density: Int): String {
+        val wm = getSystemService(WindowManager::class.java)
+        val display = wm.defaultDisplay
+        val mode = display.mode
+        val metrics = wm.currentWindowMetrics.bounds
+        val config = resources.configuration
+        return buildString {
+            appendLine("requestedSurface=${width}x$height densityDpi=$density")
+            appendLine("displayRotation=${display.rotation}")
+            appendLine("displayModePhysical=${mode.physicalWidth}x${mode.physicalHeight} modeId=${mode.modeId} refresh=${mode.refreshRate}")
+            appendLine("windowMetrics=${metrics.width()}x${metrics.height()} bounds=$metrics")
+            appendLine("resourceDisplayMetrics=${resources.displayMetrics.widthPixels}x${resources.displayMetrics.heightPixels}")
+            appendLine("configurationOrientation=${config.orientation} screenWidthDp=${config.screenWidthDp} screenHeightDp=${config.screenHeightDp}")
         }
     }
 
@@ -99,6 +112,7 @@ class ProjectionCaptureService : Service() {
         val width = captureSize.width
         val height = captureSize.height
         val density = resources.displayMetrics.densityDpi
+        captureInfo = buildCaptureInfo(width, height, density)
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
         imageReader?.setOnImageAvailableListener({ reader ->
@@ -119,12 +133,33 @@ class ProjectionCaptureService : Service() {
                 if (cropped !== padded) padded.recycle()
 
                 if (AuctionStateStore.consumeWarehouseSnapshotRequest()) {
-                    val result = runCatching { warehouseRecognizer.recognize(cropped) }.getOrNull()
+                    val frameMetadata = buildString {
+                        append(captureInfo)
+                        appendLine("image=${image.width}x${image.height} format=${image.format} timestamp=${image.timestamp}")
+                        appendLine("planePixelStride=$pixelStride rowStride=$rowStride rowPadding=$rowPadding paddedWidth=$paddedWidth")
+                        appendLine("croppedBitmap=${cropped.width}x${cropped.height} config=${cropped.config}")
+                    }
+                    WarehouseDiagnostics.recordCapture(cropped, frameMetadata)
+
+                    val attempt = runCatching { warehouseRecognizer.recognize(cropped) }
+                    val result = attempt.getOrNull()
                     if (result == null) {
+                        val error = attempt.exceptionOrNull()
+                        WarehouseDiagnostics.recordRecognition(
+                            message = if (error == null) {
+                                "recognizer returned null"
+                            } else {
+                                "recognizer threw ${error::class.java.name}: ${error.message}"
+                            },
+                            error = error,
+                        )
                         AuctionStateStore.failWarehouseSnapshot(
-                            "未识别到仓库：截图 ${cropped.width}×${cropped.height}；当前应为横屏，若仍失败请保留此提示截图"
+                            "未识别到仓库：截图 ${cropped.width}×${cropped.height}；请点“导出诊断包”发给开发者"
                         )
                     } else {
+                        WarehouseDiagnostics.recordRecognition(
+                            "SUCCESS columns=${result.columns} totalRows=${result.totalRows} viewportStartRow=${result.viewportStartRow} visibleRows=${result.visibleRows} scrollRatio=${result.scrollRatio} items=${result.items.joinToString { "${it.stableId}:${it.quality}:${it.confidence}" }}"
+                        )
                         AuctionStateStore.applyWarehouseSnapshot(result)
                     }
                 }
@@ -149,8 +184,6 @@ class ProjectionCaptureService : Service() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        // MediaProjection 会把内容适配到创建时的 Surface。这里不重新申请授权；
-        // 下一次启动截图服务时会按最新 rotation 创建正确尺寸。
     }
 
     private fun buildNotification(): Notification {
