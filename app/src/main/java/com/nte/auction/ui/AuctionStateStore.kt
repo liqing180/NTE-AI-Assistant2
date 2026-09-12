@@ -15,6 +15,12 @@ object AuctionStateStore {
 
     private val coveredRows = linkedSetOf<Int>()
 
+    /**
+     * 某个旧藏品在“可靠可见区域”内连续缺失的次数。
+     * 只有连续两帧都缺失才删除，避免滚动裁切/瞬时识别失败导致虚拟仓库误删。
+     */
+    private val missingConfirmations = mutableMapOf<String, Int>()
+
     @Volatile
     private var warehouseSnapshotPending = false
 
@@ -24,6 +30,7 @@ object AuctionStateStore {
 
     fun startNewAuction() {
         coveredRows.clear()
+        missingConfirmations.clear()
         warehouseSnapshotPending = false
         _state.value = AuctionUiState(
             captureAuthorized = _state.value.captureAuthorized,
@@ -74,16 +81,49 @@ object AuctionStateStore {
         coveredRows.removeAll { it !in 0 until result.totalRows }
 
         val previousById = previous.items.associateBy { it.id }
+        val detectedById = result.items.associateBy { it.stableId }
 
-        // 只替换“完整落在当前 viewport 内”的旧对象；跨 viewport 边界的对象保留，
-        // 防止滚动裁切时把完整对象误删。
-        val retained = previous.items.filter { item ->
+        // viewport 顶/底各保留一行安全边界。滚动时这些行最容易只露出半个藏品，
+        // 即使识别器本帧没检测到，也不能据此认定旧藏品已经消失。
+        val reliableStart = (visibleStart + VIEWPORT_EDGE_GUARD_ROWS).coerceAtMost(visibleEnd)
+        val reliableEnd = (visibleEnd - VIEWPORT_EDGE_GUARD_ROWS).coerceAtLeast(visibleStart)
+        val hasReliableInterior = reliableStart <= reliableEnd
+
+        val retained = mutableListOf<WarehouseUiItem>()
+        var confirmedRemoved = 0
+
+        for (item in previous.items) {
+            val detectedNow = detectedById.containsKey(item.id)
+            if (detectedNow) {
+                missingConfirmations.remove(item.id)
+                continue
+            }
+
             val itemEnd = item.row + item.height - 1
-            !(item.row >= visibleStart && itemEnd <= visibleEnd)
-        }.toMutableList()
+            val fullyInsideReliableArea = hasReliableInterior &&
+                item.row >= reliableStart &&
+                itemEnd <= reliableEnd
+
+            if (!fullyInsideReliableArea) {
+                // viewport 外、跨边界、或处于顶部/底部保护行：本帧没有删除资格。
+                missingConfirmations.remove(item.id)
+                retained += item
+                continue
+            }
+
+            val misses = (missingConfirmations[item.id] ?: 0) + 1
+            if (misses >= REQUIRED_MISSING_CONFIRMATIONS) {
+                missingConfirmations.remove(item.id)
+                confirmedRemoved++
+            } else {
+                missingConfirmations[item.id] = misses
+                retained += item
+            }
+        }
 
         val detected = result.items.map { item ->
             val old = previousById[item.stableId]
+            missingConfirmations.remove(item.stableId)
             val quality = when {
                 item.quality != WarehouseQualityUi.UNKNOWN -> item.quality
                 old != null -> old.quality
@@ -106,17 +146,14 @@ object AuctionStateStore {
             .distinctBy { it.id }
             .sortedWith(compareBy<WarehouseUiItem> { it.row }.thenBy { it.column })
 
-        val oldVisibleIds = previous.items
-            .filter { it.row >= visibleStart && it.row + it.height - 1 <= visibleEnd }
-            .map { it.id }
-            .toSet()
-        val newVisibleIds = detected.map { it.id }.toSet()
-        val changed = (oldVisibleIds - newVisibleIds).size +
-            (newVisibleIds - oldVisibleIds).size +
-            detected.count { newItem ->
-                val old = previousById[newItem.id]
-                old != null && old.quality != newItem.quality
-            }
+        // 变化计数只统计真正新增、品质变化，以及经过连续缺失确认后的删除。
+        val newIds = detected.map { it.id }.toSet()
+        val added = newIds.count { it !in previousById }
+        val qualityChanged = detected.count { newItem ->
+            val old = previousById[newItem.id]
+            old != null && old.quality != newItem.quality
+        }
+        val changed = added + qualityChanged + confirmedRemoved
 
         val coverage = if (result.totalRows > 0) {
             coveredRows.count { it in 0 until result.totalRows }.toDouble() / result.totalRows.toDouble()
@@ -206,6 +243,7 @@ object AuctionStateStore {
     }
 
     fun nextRound() {
+        missingConfirmations.clear()
         _state.update {
             val next = (it.round + 1).coerceAtMost(6)
             it.copy(
@@ -219,4 +257,7 @@ object AuctionStateStore {
             )
         }
     }
+
+    private const val VIEWPORT_EDGE_GUARD_ROWS = 1
+    private const val REQUIRED_MISSING_CONFIRMATIONS = 2
 }
