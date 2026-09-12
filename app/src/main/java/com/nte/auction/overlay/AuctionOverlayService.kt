@@ -9,6 +9,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,6 +26,7 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import com.nte.auction.capture.WarehouseDiagnostics
 import com.nte.auction.ui.AuctionOverlayContent
 import com.nte.auction.ui.AuctionStateStore
 
@@ -105,6 +107,7 @@ class AuctionOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner
                     onClose = ::stopSelf,
                     onDrag = ::moveBy,
                     onWarehouseSnapshot = ::captureWarehouseSnapshot,
+                    onExportDiagnostics = ::exportDiagnostics,
                 )
             }
         }
@@ -112,10 +115,6 @@ class AuctionOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner
         windowManager.addView(view, layoutParams)
     }
 
-    /**
-     * 截图前临时隐藏悬浮窗，避免面板本身遮住仓库格子。
-     * 隐藏后等待两帧左右再发起一次性截图请求，随后恢复悬浮窗。
-     */
     private fun captureWarehouseSnapshot() {
         val view = composeView ?: run {
             AuctionStateStore.requestWarehouseSnapshot()
@@ -128,6 +127,13 @@ class AuctionOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner
         view.postDelayed({
             view.visibility = View.VISIBLE
         }, 420L)
+    }
+
+    private fun exportDiagnostics() {
+        val ok = runCatching { WarehouseDiagnostics.exportAndShare(this) }.getOrDefault(false)
+        if (!ok) {
+            Toast.makeText(this, "暂无诊断截图，请先点击一次“识别/更新仓库”", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun moveBy(dx: Int, dy: Int) {
