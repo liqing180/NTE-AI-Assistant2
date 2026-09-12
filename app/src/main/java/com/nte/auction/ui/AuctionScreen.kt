@@ -15,8 +15,7 @@ fun AuctionScreen(
     onAuthorizeCapture: () -> Unit,
     onEnableOverlay: () -> Unit,
     onNewAuction: () -> Unit,
-    onFullScan: () -> Unit,
-    onFastRefresh: () -> Unit,
+    onUpdateWarehouse: () -> Unit,
     onNextRound: () -> Unit,
 ) {
     MaterialTheme {
@@ -30,13 +29,13 @@ fun AuctionScreen(
                 Text("即刻落槌 · 真珠场估价", style = MaterialTheme.typography.headlineSmall)
                 Text(state.statusText, style = MaterialTheme.typography.bodyMedium)
 
-                if (state.scanState.name != "IDLE") {
+                if (state.scanCoverage > 0.0 || state.scanState.name == "SCANNING") {
                     LinearProgressIndicator(
                         progress = { state.scanCoverage.toFloat() },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Text(
-                        "扫描 ${(state.scanCoverage * 100).roundToInt()}% · 已见 ${state.observedItems} 件 · 本轮变化 ${state.changedItems} 件"
+                        "仓库覆盖 ${(state.scanCoverage * 100).roundToInt()}% · 已识别 ${state.observedItems} 件 · 本轮变化 ${state.changedItems} 件"
                     )
                 }
 
@@ -53,14 +52,20 @@ fun AuctionScreen(
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(onClick = onFullScan, enabled = state.sessionActive) { Text("初始化仓库") }
-                    Button(onClick = onFastRefresh, enabled = state.sessionActive) { Text("快速刷新") }
-                    OutlinedButton(onClick = onNextRound, enabled = state.sessionActive) { Text("下一回合") }
+                    Button(
+                        onClick = onUpdateWarehouse,
+                        enabled = state.sessionActive && state.captureAuthorized && state.scanState.name != "SCANNING",
+                    ) {
+                        Text("识别/更新仓库")
+                    }
+                    OutlinedButton(onClick = onNextRound, enabled = state.sessionActive) {
+                        Text("下一回合")
+                    }
                 }
 
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "悬浮窗包含估价、虚拟仓库、初始化仓库、快速刷新、下一回合和新对局；视觉识别结果会通过共享状态实时同步。",
+                    "横屏打开仓库后，滚到任意位置点击“识别/更新仓库”。每次点击只截取一张全屏画面，并根据右侧滚动条位置增量合并当前可见区域；滚动到其它位置后可继续点击补全仓库。",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -77,7 +82,7 @@ private fun EstimateCard(state: AuctionUiState) {
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("第 ${state.round} 回合")
-                Text(if (state.scanState.name == "COMPLETE") "仓库 ✓ 最新" else "仓库待更新")
+                Text(if (state.warehouse.rows > 0) "仓库已建立" else "仓库待识别")
             }
             HorizontalDivider()
             ValueRow("P25", state.p25)
