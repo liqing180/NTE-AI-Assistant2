@@ -14,12 +14,14 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.view.WindowManager
+import com.nte.auction.ui.AuctionStateStore
 
 class ProjectionCaptureService : Service() {
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var lastEmitMs = 0L
+    private val warehouseRecognizer = WarehouseSnapshotRecognizer()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -80,7 +82,7 @@ class ProjectionCaptureService : Service() {
             val now = System.currentTimeMillis()
             val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-                // 第一阶段限频 ~8 FPS。后面 FrameSampler 会根据仓库实际位移进一步丢帧。
+                // 屏幕读取仍限频约 8 FPS；仓库识别只在用户点击按钮后消费其中一帧。
                 if (now - lastEmitMs < 125L) return@setOnImageAvailableListener
                 lastEmitMs = now
                 val plane = image.planes.firstOrNull() ?: return@setOnImageAvailableListener
@@ -93,6 +95,18 @@ class ProjectionCaptureService : Service() {
                 padded.copyPixelsFromBuffer(buffer)
                 val cropped = Bitmap.createBitmap(padded, 0, 0, width, height)
                 if (cropped !== padded) padded.recycle()
+
+                if (AuctionStateStore.consumeWarehouseSnapshotRequest()) {
+                    val result = runCatching { warehouseRecognizer.recognize(cropped) }.getOrNull()
+                    if (result == null) {
+                        AuctionStateStore.failWarehouseSnapshot(
+                            "未识别到仓库：请横屏打开仓库界面，并确保右侧滚动条可见"
+                        )
+                    } else {
+                        AuctionStateStore.applyWarehouseSnapshot(result)
+                    }
+                }
+
                 FrameHub.offer(cropped)
             } finally {
                 image.close()
