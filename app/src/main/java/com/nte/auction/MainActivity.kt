@@ -52,8 +52,7 @@ class MainActivity : ComponentActivity() {
                 onAuthorizeCapture = ::requestScreenCapture,
                 onEnableOverlay = ::requestOrShowOverlay,
                 onNewAuction = viewModel::startNewAuction,
-                onFullScan = viewModel::startFullScan,
-                onFastRefresh = viewModel::startFastRefresh,
+                onUpdateWarehouse = viewModel::updateWarehouseFromScreenshot,
                 onNextRound = viewModel::nextRound,
             )
         }
