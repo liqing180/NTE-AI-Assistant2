@@ -22,5 +22,9 @@
             android:name=".capture.ProjectionCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+
+        <service
+            android:name=".overlay.AuctionOverlayService"
+            android:exported="false" />
     </application>
 </manifest>
