@@ -3,8 +3,8 @@ package com.nte.auction.capture
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
-import android.graphics.Matrix
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -14,6 +14,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
+import android.view.Surface
 import android.view.WindowManager
 import com.nte.auction.ui.AuctionStateStore
 
@@ -61,6 +62,27 @@ class ProjectionCaptureService : Service() {
         super.onDestroy()
     }
 
+    private data class CaptureSize(val width: Int, val height: Int)
+
+    /**
+     * WindowMetrics 属于本应用窗口。悬浮窗从竖屏 Activity 启动后切回横屏游戏时，
+     * 某些 ROM 仍会返回 1080x2354，导致 VirtualDisplay 也被错误创建成竖屏。
+     * 这里直接读取物理 Display + 当前 rotation，得到游戏真正的屏幕方向。
+     */
+    @Suppress("DEPRECATION")
+    private fun resolveCaptureSize(): CaptureSize {
+        val display = getSystemService(WindowManager::class.java).defaultDisplay
+        val mode = display.mode
+        val physicalWidth = mode.physicalWidth.coerceAtLeast(1)
+        val physicalHeight = mode.physicalHeight.coerceAtLeast(1)
+        val naturalLong = maxOf(physicalWidth, physicalHeight)
+        val naturalShort = minOf(physicalWidth, physicalHeight)
+        return when (display.rotation) {
+            Surface.ROTATION_90, Surface.ROTATION_270 -> CaptureSize(naturalLong, naturalShort)
+            else -> CaptureSize(naturalShort, naturalLong)
+        }
+    }
+
     private fun startProjection(resultCode: Int, data: Intent) {
         val manager = getSystemService(MediaProjectionManager::class.java)
         projection = manager.getMediaProjection(resultCode, data)
@@ -73,9 +95,9 @@ class ProjectionCaptureService : Service() {
             Handler(mainLooper),
         )
 
-        val metrics = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
-        val width = metrics.width().coerceAtLeast(1)
-        val height = metrics.height().coerceAtLeast(1)
+        val captureSize = resolveCaptureSize()
+        val width = captureSize.width
+        val height = captureSize.height
         val density = resources.displayMetrics.densityDpi
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
@@ -83,7 +105,6 @@ class ProjectionCaptureService : Service() {
             val now = System.currentTimeMillis()
             val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-                // 屏幕读取仍限频约 8 FPS；仓库识别只在用户点击按钮后消费其中一帧。
                 if (now - lastEmitMs < 125L) return@setOnImageAvailableListener
                 lastEmitMs = now
                 val plane = image.planes.firstOrNull() ?: return@setOnImageAvailableListener
@@ -98,10 +119,10 @@ class ProjectionCaptureService : Service() {
                 if (cropped !== padded) padded.recycle()
 
                 if (AuctionStateStore.consumeWarehouseSnapshotRequest()) {
-                    val result = runCatching { recognizeWarehouseFrame(cropped) }.getOrNull()
+                    val result = runCatching { warehouseRecognizer.recognize(cropped) }.getOrNull()
                     if (result == null) {
                         AuctionStateStore.failWarehouseSnapshot(
-                            "未识别到仓库：截图 ${cropped.width}×${cropped.height}，请保持仓库界面可见并确保右侧滚动条出现"
+                            "未识别到仓库：截图 ${cropped.width}×${cropped.height}；当前应为横屏，若仍失败请保留此提示截图"
                         )
                     } else {
                         AuctionStateStore.applyWarehouseSnapshot(result)
@@ -126,43 +147,10 @@ class ProjectionCaptureService : Service() {
         )
     }
 
-    /**
-     * 某些 Android 设备在横屏游戏中仍会把 MediaProjection 缓冲区按竖屏物理方向
-     * 提供（例如 720×1570），画面依赖 90° 显示矩阵才是用户看到的横屏。
-     *
-     * 两个旋转方向都要尝试：错误方向偶尔也会把界面亮边误识别成滚动条，所以不能
-     * 采用“第一个非 null”。优先选择总行数大于可见行数、识别到有效藏品更多的候选。
-     */
-    private fun recognizeWarehouseFrame(bitmap: Bitmap): WarehouseSnapshotRecognizer.Result? {
-        warehouseRecognizer.recognize(bitmap)?.let { return it }
-        if (bitmap.width >= bitmap.height) return null
-
-        val candidates = mutableListOf<WarehouseSnapshotRecognizer.Result>()
-        val rotations = floatArrayOf(90f, -90f)
-        for (degrees in rotations) {
-            val matrix = Matrix().apply { postRotate(degrees) }
-            val rotated = Bitmap.createBitmap(
-                bitmap,
-                0,
-                0,
-                bitmap.width,
-                bitmap.height,
-                matrix,
-                false,
-            )
-            try {
-                warehouseRecognizer.recognize(rotated)?.let(candidates::add)
-            } finally {
-                if (rotated !== bitmap && !rotated.isRecycled) rotated.recycle()
-            }
-        }
-
-        return candidates.maxWithOrNull(
-            compareBy<WarehouseSnapshotRecognizer.Result> {
-                if (it.totalRows > it.visibleRows) 1 else 0
-            }.thenBy { it.items.size }
-                .thenBy { it.totalRows }
-        )
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // MediaProjection 会把内容适配到创建时的 Surface。这里不重新申请授权；
+        // 下一次启动截图服务时会按最新 rotation 创建正确尺寸。
     }
 
     private fun buildNotification(): Notification {
