@@ -250,7 +250,7 @@ class WarehouseSnapshotRecognizer {
             for (column in 0 until columns) {
                 if (!occupied[row][column]) continue
                 if (column + 1 < columns && occupied[row][column + 1] &&
-                    hasBrightVerticalBridge(
+                    hasContinuousVerticalBridge(
                         pixels, screenWidth, screenHeight,
                         gridLeft + (column + 1) * cellSize,
                         gridTop + row * cellSize,
@@ -260,7 +260,7 @@ class WarehouseSnapshotRecognizer {
                     union(index(row, column), index(row, column + 1))
                 }
                 if (row + 1 < rows && occupied[row + 1][column] &&
-                    hasBrightHorizontalBridge(
+                    hasContinuousHorizontalBridge(
                         pixels, screenWidth, screenHeight,
                         gridLeft + column * cellSize,
                         gridTop + (row + 1) * cellSize,
@@ -302,7 +302,12 @@ class WarehouseSnapshotRecognizer {
         }
     }
 
-    private fun hasBrightVerticalBridge(
+    /**
+     * 同一个多格藏品跨过内部网格线时，边界附近通常是近乎均匀的灰色填充；
+     * 两个相邻但独立的藏品在接缝处会出现圆角、亮边和暗缝，亮度方差明显更大。
+     * 仅看平均亮度会把相邻藏品错误合并，所以这里同时限制方差。
+     */
+    private fun hasContinuousVerticalBridge(
         pixels: IntArray,
         width: Int,
         height: Int,
@@ -312,12 +317,12 @@ class WarehouseSnapshotRecognizer {
     ): Boolean {
         val x0 = (boundaryX - cellSize * 0.08f).roundToInt().coerceIn(0, width - 1)
         val x1 = (boundaryX + cellSize * 0.08f).roundToInt().coerceIn(x0 + 1, width)
-        val y0 = (cellTop + cellSize * 0.30f).roundToInt().coerceIn(0, height - 1)
-        val y1 = (cellTop + cellSize * 0.70f).roundToInt().coerceIn(y0 + 1, height)
-        return meanLuma(pixels, width, x0, y0, x1, y1) >= 36.0
+        val y0 = (cellTop + cellSize * 0.15f).roundToInt().coerceIn(0, height - 1)
+        val y1 = (cellTop + cellSize * 0.85f).roundToInt().coerceIn(y0 + 1, height)
+        return isUniformBrightBridge(pixels, width, x0, y0, x1, y1)
     }
 
-    private fun hasBrightHorizontalBridge(
+    private fun hasContinuousHorizontalBridge(
         pixels: IntArray,
         width: Int,
         height: Int,
@@ -325,31 +330,37 @@ class WarehouseSnapshotRecognizer {
         boundaryY: Float,
         cellSize: Float,
     ): Boolean {
-        val x0 = (cellLeft + cellSize * 0.30f).roundToInt().coerceIn(0, width - 1)
-        val x1 = (cellLeft + cellSize * 0.70f).roundToInt().coerceIn(x0 + 1, width)
+        val x0 = (cellLeft + cellSize * 0.15f).roundToInt().coerceIn(0, width - 1)
+        val x1 = (cellLeft + cellSize * 0.85f).roundToInt().coerceIn(x0 + 1, width)
         val y0 = (boundaryY - cellSize * 0.08f).roundToInt().coerceIn(0, height - 1)
         val y1 = (boundaryY + cellSize * 0.08f).roundToInt().coerceIn(y0 + 1, height)
-        return meanLuma(pixels, width, x0, y0, x1, y1) >= 36.0
+        return isUniformBrightBridge(pixels, width, x0, y0, x1, y1)
     }
 
-    private fun meanLuma(
+    private fun isUniformBrightBridge(
         pixels: IntArray,
         width: Int,
         x0: Int,
         y0: Int,
         x1: Int,
         y1: Int,
-    ): Double {
+    ): Boolean {
         var sum = 0L
+        var sumSquares = 0L
         var count = 0
         for (y in y0 until y1) {
             val offset = y * width
             for (x in x0 until x1) {
-                sum += luma(pixels[offset + x])
+                val value = luma(pixels[offset + x])
+                sum += value
+                sumSquares += value.toLong() * value.toLong()
                 count++
             }
         }
-        return if (count == 0) 0.0 else sum.toDouble() / count.toDouble()
+        if (count == 0) return false
+        val mean = sum.toDouble() / count.toDouble()
+        val variance = (sumSquares.toDouble() / count.toDouble()) - mean * mean
+        return mean >= 36.0 && variance <= 25.0
     }
 
     private fun classifyQuality(
