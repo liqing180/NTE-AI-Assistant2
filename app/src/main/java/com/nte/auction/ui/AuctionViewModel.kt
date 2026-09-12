@@ -8,8 +8,7 @@ class AuctionViewModel : ViewModel() {
 
     fun onCaptureAuthorized() = AuctionStateStore.onCaptureAuthorized()
     fun startNewAuction() = AuctionStateStore.startNewAuction()
-    fun startFullScan() = AuctionStateStore.startFullScan()
-    fun startFastRefresh() = AuctionStateStore.startFastRefresh()
+    fun updateWarehouseFromScreenshot() = AuctionStateStore.requestWarehouseSnapshot()
 
     /** VisionPipeline 完成后通过此入口回写扫描进度。 */
     fun updateScanProgress(
