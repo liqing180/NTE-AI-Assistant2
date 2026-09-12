@@ -20,7 +20,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -34,6 +33,7 @@ fun AuctionOverlayContent(
     onToggleCollapsed: () -> Unit,
     onClose: () -> Unit,
     onDrag: (dx: Int, dy: Int) -> Unit,
+    onWarehouseSnapshot: () -> Unit,
 ) {
     MaterialTheme {
         if (collapsed) {
@@ -83,7 +83,7 @@ fun AuctionOverlayContent(
 
                 EstimateSummary(state)
 
-                if (state.scanState.name != "IDLE") {
+                if (state.scanCoverage > 0.0 || state.scanState.name == "SCANNING") {
                     LinearProgressIndicator(
                         progress = { state.scanCoverage.toFloat() },
                         modifier = Modifier.fillMaxWidth(),
@@ -96,7 +96,7 @@ fun AuctionOverlayContent(
 
                 WarehousePanel(state.warehouse)
 
-                OverlayActions(state)
+                OverlayActions(state, onWarehouseSnapshot)
             }
         }
     }
@@ -140,7 +140,7 @@ private fun EstimateSummary(state: AuctionUiState) {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("仓库估价", fontWeight = FontWeight.Bold)
-                Text(if (state.scanState.name == "COMPLETE") "✓ 最新" else "待更新")
+                Text(if (state.warehouse.rows > 0) "已建立" else "待更新")
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 OverlayValue("P25", state.p25)
@@ -178,7 +178,7 @@ private fun WarehousePanel(model: WarehouseUiModel) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("虚拟仓库", fontWeight = FontWeight.Bold)
                 Text(
-                    if (model.rows > 0) "${model.columns}×${model.rows} · ${model.items.size} 件" else "等待初始化",
+                    if (model.rows > 0) "${model.columns}×${model.rows} · ${model.items.size} 件" else "等待识别",
                     style = MaterialTheme.typography.labelSmall,
                 )
             }
@@ -191,7 +191,7 @@ private fun WarehousePanel(model: WarehouseUiModel) {
                         .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("点击“初始化仓库”后生成完整仓库镜像")
+                    Text("横屏打开仓库后点击“识别/更新仓库”")
                 }
             } else {
                 Canvas(
@@ -272,22 +272,20 @@ private fun QualityFixButton(text: String, itemId: String, quality: WarehouseQua
 }
 
 @Composable
-private fun OverlayActions(state: AuctionUiState) {
+private fun OverlayActions(state: AuctionUiState, onWarehouseSnapshot: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(
-                onClick = AuctionStateStore::startFullScan,
-                enabled = state.sessionActive,
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 6.dp),
-            ) { Text("初始化仓库") }
-            Button(
-                onClick = AuctionStateStore::startFastRefresh,
-                enabled = state.sessionActive,
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 6.dp),
-            ) { Text("快速刷新") }
-        }
+        Button(
+            onClick = onWarehouseSnapshot,
+            enabled = state.sessionActive && state.captureAuthorized && state.scanState.name != "SCANNING",
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 6.dp),
+        ) { Text("识别/更新仓库") }
+
+        Text(
+            "滚到任意位置后点击；按右侧滚动条位置增量合并。",
+            style = MaterialTheme.typography.labelSmall,
+        )
+
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             OutlinedButton(
                 onClick = AuctionStateStore::nextRound,
