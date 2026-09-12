@@ -150,10 +150,10 @@ class ProjectionCaptureService : Service() {
                     }
                     WarehouseDiagnostics.recordCapture(frame, frameMetadata)
 
-                    val attempt = runCatching { warehouseRecognizer.recognize(frame) }
-                    val result = attempt.getOrNull()
+                    val recognitionAttempt = runCatching { warehouseRecognizer.recognize(frame) }
+                    val result = recognitionAttempt.getOrNull()
                     if (result == null) {
-                        val error = attempt.exceptionOrNull()
+                        val error = recognitionAttempt.exceptionOrNull()
                         WarehouseDiagnostics.recordRecognition(
                             message = if (error == null) {
                                 "recognizer returned null"
@@ -166,10 +166,36 @@ class ProjectionCaptureService : Service() {
                             "未识别到仓库：截图 ${frame.width}×${frame.height}；请点“导出诊断包”发给开发者"
                         )
                     } else {
-                        WarehouseDiagnostics.recordRecognition(
-                            "SUCCESS columns=${result.columns} totalRows=${result.totalRows} viewportStartRow=${result.viewportStartRow} visibleRows=${result.visibleRows} scrollRatio=${result.scrollRatio} items=${result.items.joinToString { "${it.stableId}:${it.quality}:${it.confidence}" }}"
-                        )
-                        AuctionStateStore.applyWarehouseSnapshot(result)
+                        // 诊断包曾出现“recognizer SUCCESS，但虚拟仓库仍为 0 件”。
+                        // 原因无法从旧包判断，因为旧逻辑在状态合并前就先写 SUCCESS；
+                        // 如果 apply 阶段抛错，诊断只会留下一个误导性的成功记录。
+                        // 现在把识别 + 状态合并拆开保护，并且只在合并成功后记录 SUCCESS。
+                        val applyAttempt = runCatching {
+                            AuctionStateStore.applyWarehouseSnapshot(result)
+                        }
+                        val applyError = applyAttempt.exceptionOrNull()
+                        if (applyError != null) {
+                            WarehouseDiagnostics.recordRecognition(
+                                message = "APPLY_FAILED columns=${result.columns} totalRows=${result.totalRows} " +
+                                    "viewportStartRow=${result.viewportStartRow} visibleRows=${result.visibleRows} " +
+                                    "scrollRatio=${result.scrollRatio} items=${result.items.size}: " +
+                                    "${applyError::class.java.name}: ${applyError.message}",
+                                error = applyError,
+                            )
+                            AuctionStateStore.failWarehouseSnapshot(
+                                "仓库识别成功但虚拟仓库合并失败；请导出诊断包"
+                            )
+                        } else {
+                            val state = AuctionStateStore.state.value
+                            WarehouseDiagnostics.recordRecognition(
+                                "SUCCESS columns=${result.columns} totalRows=${result.totalRows} " +
+                                    "viewportStartRow=${result.viewportStartRow} visibleRows=${result.visibleRows} " +
+                                    "scrollRatio=${result.scrollRatio} detected=${result.items.size} " +
+                                    "warehouse=${state.warehouse.columns}x${state.warehouse.rows} " +
+                                    "warehouseItems=${state.warehouse.items.size} items=" +
+                                    result.items.joinToString { "${it.stableId}:${it.quality}:${it.confidence}" }
+                            )
+                        }
                     }
                 }
 
