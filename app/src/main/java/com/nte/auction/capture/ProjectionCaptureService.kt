@@ -4,6 +4,7 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -97,10 +98,10 @@ class ProjectionCaptureService : Service() {
                 if (cropped !== padded) padded.recycle()
 
                 if (AuctionStateStore.consumeWarehouseSnapshotRequest()) {
-                    val result = runCatching { warehouseRecognizer.recognize(cropped) }.getOrNull()
+                    val result = runCatching { recognizeWarehouseFrame(cropped) }.getOrNull()
                     if (result == null) {
                         AuctionStateStore.failWarehouseSnapshot(
-                            "未识别到仓库：请横屏打开仓库界面，并确保右侧滚动条可见"
+                            "未识别到仓库：截图 ${cropped.width}×${cropped.height}，请保持仓库界面可见并确保右侧滚动条出现"
                         )
                     } else {
                         AuctionStateStore.applyWarehouseSnapshot(result)
@@ -123,6 +124,37 @@ class ProjectionCaptureService : Service() {
             null,
             null,
         )
+    }
+
+    /**
+     * 某些 Android 设备在横屏游戏中仍会把 MediaProjection 缓冲区按竖屏物理方向
+     * 提供（例如 720×1570），画面依赖 90° 显示矩阵才是用户看到的横屏。
+     * 仓库识别器工作在横屏坐标系，因此这里在原图失败后自动尝试两个 90° 方向。
+     */
+    private fun recognizeWarehouseFrame(bitmap: Bitmap): WarehouseSnapshotRecognizer.Result? {
+        warehouseRecognizer.recognize(bitmap)?.let { return it }
+        if (bitmap.width >= bitmap.height) return null
+
+        val rotations = floatArrayOf(90f, -90f)
+        for (degrees in rotations) {
+            val matrix = Matrix().apply { postRotate(degrees) }
+            val rotated = Bitmap.createBitmap(
+                bitmap,
+                0,
+                0,
+                bitmap.width,
+                bitmap.height,
+                matrix,
+                false,
+            )
+            val result = try {
+                warehouseRecognizer.recognize(rotated)
+            } finally {
+                if (rotated !== bitmap && !rotated.isRecycled) rotated.recycle()
+            }
+            if (result != null) return result
+        }
+        return null
     }
 
     private fun buildNotification(): Notification {
