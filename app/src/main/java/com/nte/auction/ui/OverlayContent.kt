@@ -34,6 +34,7 @@ fun AuctionOverlayContent(
     onClose: () -> Unit,
     onDrag: (dx: Int, dy: Int) -> Unit,
     onWarehouseSnapshot: () -> Unit,
+    onExportDiagnostics: () -> Unit,
 ) {
     MaterialTheme {
         if (collapsed) {
@@ -96,7 +97,7 @@ fun AuctionOverlayContent(
 
                 WarehousePanel(state.warehouse)
 
-                OverlayActions(state, onWarehouseSnapshot)
+                OverlayActions(state, onWarehouseSnapshot, onExportDiagnostics)
             }
         }
     }
@@ -123,7 +124,7 @@ private fun OverlayHeader(
     ) {
         Column(Modifier.weight(1f)) {
             Text("即刻落槌 · 第 $round 回合", fontWeight = FontWeight.Bold)
-            Text(status, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+            Text(status, style = MaterialTheme.typography.labelSmall, maxLines = 2)
         }
         TextButton(onClick = onCollapse, contentPadding = PaddingValues(horizontal = 8.dp)) {
             Text("收起")
@@ -272,7 +273,11 @@ private fun QualityFixButton(text: String, itemId: String, quality: WarehouseQua
 }
 
 @Composable
-private fun OverlayActions(state: AuctionUiState, onWarehouseSnapshot: () -> Unit) {
+private fun OverlayActions(
+    state: AuctionUiState,
+    onWarehouseSnapshot: () -> Unit,
+    onExportDiagnostics: () -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Button(
             onClick = onWarehouseSnapshot,
@@ -282,9 +287,15 @@ private fun OverlayActions(state: AuctionUiState, onWarehouseSnapshot: () -> Uni
         ) { Text("识别/更新仓库") }
 
         Text(
-            "滚到任意位置后点击；按右侧滚动条位置增量合并。",
+            "滚到任意位置后点击；按右侧滚动条位置增量合并。识别失败后可导出完整诊断包。",
             style = MaterialTheme.typography.labelSmall,
         )
+
+        OutlinedButton(
+            onClick = onExportDiagnostics,
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 6.dp),
+        ) { Text("导出诊断包（含截图）") }
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             OutlinedButton(
