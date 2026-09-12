@@ -11,7 +11,9 @@ import kotlin.math.roundToInt
 @Composable
 fun AuctionScreen(
     state: AuctionUiState,
+    overlayEnabled: Boolean,
     onAuthorizeCapture: () -> Unit,
+    onEnableOverlay: () -> Unit,
     onNewAuction: () -> Unit,
     onFullScan: () -> Unit,
     onFastRefresh: () -> Unit,
@@ -44,18 +46,21 @@ fun AuctionScreen(
                     Button(onClick = onAuthorizeCapture, enabled = !state.captureAuthorized) {
                         Text(if (state.captureAuthorized) "已授权截图" else "授权截图")
                     }
+                    Button(onClick = onEnableOverlay) {
+                        Text(if (overlayEnabled) "显示悬浮窗" else "开启悬浮窗")
+                    }
                     Button(onClick = onNewAuction) { Text("新对局") }
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(onClick = onFullScan, enabled = state.sessionActive) { Text("完整建仓") }
+                    Button(onClick = onFullScan, enabled = state.sessionActive) { Text("初始化仓库") }
                     Button(onClick = onFastRefresh, enabled = state.sessionActive) { Text("快速刷新") }
                     OutlinedButton(onClick = onNextRound, enabled = state.sessionActive) { Text("下一回合") }
                 }
 
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "当前阶段：截图链路 + 核心估价引擎已落代码；仓库视觉检测器将在下一层接入。",
+                    "悬浮窗包含估价、虚拟仓库、初始化仓库、快速刷新、下一回合和新对局；视觉识别结果会通过共享状态实时同步。",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
