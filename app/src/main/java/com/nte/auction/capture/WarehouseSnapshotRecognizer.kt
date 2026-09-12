@@ -2,16 +2,19 @@ package com.nte.auction.capture
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Matrix
 import com.nte.auction.ui.WarehouseQualityUi
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
  * 单张全屏截图仓库识别。
  *
- * 游戏仓库固定在横屏右侧。这里不再依赖连续视频帧去猜滚动距离，而是直接读取
- * 仓库右侧滚动条：滚动条滑块位置决定当前 viewport 对应的全局起始行，滑块长度
- * 用来估算完整仓库行数。这样用户可以滚到任意位置后点击一次“识别/更新仓库”，
- * 每张截图都能独立定位并增量合并。
+ * 识别流程：
+ * 1. 自动兼容 MediaProjection 可能返回的竖屏底层缓冲；
+ * 2. 从右侧亮色滑块定位滚动条，并计算当前 viewport 的全局行位置；
+ * 3. 在仓库网格区域直接检测连续亮色矩形轮廓，不再依赖“单元格中心是否够亮”；
+ * 4. 将轮廓宽高映射回 10 列网格，从而稳定恢复 1x2 / 2x2 / 3x2 等尺寸。
  */
 class WarehouseSnapshotRecognizer {
     data class DetectedItem(
@@ -35,6 +38,42 @@ class WarehouseSnapshotRecognizer {
     )
 
     fun recognize(bitmap: Bitmap): Result? {
+        if (bitmap.width >= bitmap.height) {
+            return recognizeLandscape(bitmap)
+        }
+
+        // 某些设备/录屏会给 MediaProjection 返回 720x1570 之类的底层竖屏缓冲，
+        // 但真实游戏画面带 90 度显示旋转。两个方向都尝试，选结构更像仓库的结果。
+        val candidates = listOf(90f, -90f).mapNotNull { degrees ->
+            val matrix = Matrix().apply { postRotate(degrees) }
+            val rotated = Bitmap.createBitmap(
+                bitmap,
+                0,
+                0,
+                bitmap.width,
+                bitmap.height,
+                matrix,
+                true,
+            )
+            try {
+                recognizeLandscape(rotated)
+            } finally {
+                if (rotated !== bitmap) rotated.recycle()
+            }
+        }
+        return candidates.maxByOrNull(::candidateScore)
+    }
+
+    private fun candidateScore(result: Result): Double {
+        val rowPlausibility = when (result.totalRows) {
+            in 15..45 -> 3.0
+            in 10..60 -> 1.0
+            else -> -3.0
+        }
+        return rowPlausibility + result.items.sumOf { it.confidence.toDouble() }
+    }
+
+    private fun recognizeLandscape(bitmap: Bitmap): Result? {
         val width = bitmap.width
         val height = bitmap.height
         if (width <= height || width < 800 || height < 400) return null
@@ -46,8 +85,6 @@ class WarehouseSnapshotRecognizer {
         val trackBottom = (height * 0.75f).roundToInt().coerceIn(trackTop + 1, height)
         val scroll = detectScrollbar(pixels, width, height, trackTop, trackBottom) ?: return null
 
-        // 视频样本中仓库为 10 列，右边界紧贴滚动条左侧。使用滚动条作为横向锚点，
-        // 比单纯写死屏幕坐标更能适配不同 16:9 / 20:9 横屏分辨率。
         val columns = 10
         val gridRight = (scroll.x - width * 0.006f).roundToInt()
         val gridLeft = (width * 0.665f).roundToInt()
@@ -56,6 +93,7 @@ class WarehouseSnapshotRecognizer {
 
         val cellSize = (gridRight - gridLeft).toFloat() / columns.toFloat()
         if (cellSize < 20f) return null
+
         val visibleRows = (((height * 0.75f) - gridTop) / cellSize)
             .roundToInt()
             .coerceIn(8, 12)
@@ -74,58 +112,72 @@ class WarehouseSnapshotRecognizer {
         val viewportStartRow = (scrollRatio * maxStartRow).roundToInt()
             .coerceIn(0, maxStartRow)
 
-        val occupied = Array(visibleRows) { BooleanArray(columns) }
-        for (row in 0 until visibleRows) {
-            for (column in 0 until columns) {
-                occupied[row][column] = isOccupiedCell(
-                    pixels = pixels,
-                    screenWidth = width,
-                    screenHeight = height,
-                    left = gridLeft + column * cellSize,
-                    top = gridTop + row * cellSize,
-                    size = cellSize,
-                )
-            }
-        }
+        val gridBottom = (gridTop + visibleRows * cellSize)
+            .roundToInt()
+            .coerceAtMost(height)
 
-        val components = buildComponents(
-            occupied = occupied,
+        val contours = detectItemContours(
             pixels = pixels,
             screenWidth = width,
             screenHeight = height,
-            gridLeft = gridLeft.toFloat(),
-            gridTop = gridTop.toFloat(),
+            gridLeft = gridLeft,
+            gridTop = gridTop,
+            gridRight = gridRight,
+            gridBottom = gridBottom,
             cellSize = cellSize,
         )
 
-        val items = components.mapNotNull { component ->
-            // 非顶部/底部 viewport 的边缘对象可能是被滚动裁掉的一部分，跳过它们，
-            // 避免把一个完整藏品错误记录成更小尺寸。下一次有完整视野时会补回来。
-            if (viewportStartRow > 0 && component.minRow == 0) return@mapNotNull null
-            if (viewportStartRow + visibleRows < totalRows && component.maxRow == visibleRows - 1) {
+        val items = contours.mapNotNull { contour ->
+            val itemWidth = (contour.width / cellSize)
+                .roundToInt()
+                .coerceIn(1, 6)
+            val itemHeight = (contour.height / cellSize)
+                .roundToInt()
+                .coerceIn(1, 6)
+
+            // 用矩形中心反推网格起点，比直接用左上角更能容忍圆角、阴影和发光外扩。
+            val centerX = contour.left + contour.width / 2f
+            val centerY = contour.top + contour.height / 2f
+            val column = (((centerX - gridLeft) / cellSize) - itemWidth / 2f)
+                .roundToInt()
+            val localRow = (((centerY - gridTop) / cellSize) - itemHeight / 2f)
+                .roundToInt()
+
+            if (column !in 0 until columns || column + itemWidth > columns) return@mapNotNull null
+            if (localRow !in 0 until visibleRows || localRow + itemHeight > visibleRows) return@mapNotNull null
+
+            // 中段滚动时，接触 viewport 上下边界的轮廓可能只是被裁掉的半个藏品。
+            if (viewportStartRow > 0 && contour.top <= gridTop + cellSize * 0.18f) {
+                return@mapNotNull null
+            }
+            if (viewportStartRow + visibleRows < totalRows &&
+                contour.bottom >= gridBottom - cellSize * 0.18f
+            ) {
                 return@mapNotNull null
             }
 
-            val itemWidth = component.maxColumn - component.minColumn + 1
-            val itemHeight = component.maxRow - component.minRow + 1
-            val quality = classifyQuality(
-                pixels = pixels,
-                screenWidth = width,
-                screenHeight = height,
-                left = gridLeft + component.minColumn * cellSize,
-                top = gridTop + component.minRow * cellSize,
-                itemWidth = itemWidth * cellSize,
-                itemHeight = itemHeight * cellSize,
-            )
+            val widthError = abs(contour.width / cellSize - itemWidth)
+            val heightError = abs(contour.height / cellSize - itemHeight)
+            val sizeFit = (1f - ((widthError + heightError) / 1.2f)).coerceIn(0f, 1f)
+            val confidence = (0.78f + sizeFit * 0.19f).coerceIn(0f, 0.97f)
+
             DetectedItem(
-                row = viewportStartRow + component.minRow,
-                column = component.minColumn,
+                row = viewportStartRow + localRow,
+                column = column,
                 width = itemWidth,
                 height = itemHeight,
-                quality = quality,
-                confidence = component.confidence,
+                quality = classifyQuality(
+                    pixels = pixels,
+                    screenWidth = width,
+                    screenHeight = height,
+                    left = contour.left.toFloat(),
+                    top = contour.top.toFloat(),
+                    itemWidth = contour.width.toFloat(),
+                    itemHeight = contour.height.toFloat(),
+                ),
+                confidence = confidence,
             )
-        }
+        }.distinctBy { it.stableId }
 
         return Result(
             columns = columns,
@@ -179,188 +231,135 @@ class WarehouseSnapshotRecognizer {
         return best
     }
 
-    private fun isOccupiedCell(
-        pixels: IntArray,
-        screenWidth: Int,
-        screenHeight: Int,
-        left: Float,
-        top: Float,
-        size: Float,
-    ): Boolean {
-        val x0 = (left + size * 0.22f).roundToInt().coerceIn(0, screenWidth - 1)
-        val x1 = (left + size * 0.78f).roundToInt().coerceIn(x0 + 1, screenWidth)
-        val y0 = (top + size * 0.22f).roundToInt().coerceIn(0, screenHeight - 1)
-        val y1 = (top + size * 0.78f).roundToInt().coerceIn(y0 + 1, screenHeight)
-
-        var sum = 0L
-        var bright = 0
-        var count = 0
-        for (y in y0 until y1) {
-            val offset = y * screenWidth
-            for (x in x0 until x1) {
-                val value = luma(pixels[offset + x])
-                sum += value
-                if (value >= 48) bright++
-                count++
-            }
-        }
-        if (count == 0) return false
-        val mean = sum.toDouble() / count.toDouble()
-        val brightRatio = bright.toDouble() / count.toDouble()
-        return mean >= 38.0 && brightRatio >= 0.52
-    }
-
-    private data class Component(
-        val minRow: Int,
-        val maxRow: Int,
-        val minColumn: Int,
-        val maxColumn: Int,
-        val confidence: Float,
-    )
-
-    private fun buildComponents(
-        occupied: Array<BooleanArray>,
-        pixels: IntArray,
-        screenWidth: Int,
-        screenHeight: Int,
-        gridLeft: Float,
-        gridTop: Float,
-        cellSize: Float,
-    ): List<Component> {
-        val rows = occupied.size
-        val columns = occupied.firstOrNull()?.size ?: return emptyList()
-        val parent = IntArray(rows * columns) { it }
-
-        fun index(row: Int, column: Int) = row * columns + column
-        fun find(value: Int): Int {
-            var v = value
-            while (parent[v] != v) {
-                parent[v] = parent[parent[v]]
-                v = parent[v]
-            }
-            return v
-        }
-        fun union(a: Int, b: Int) {
-            val ra = find(a)
-            val rb = find(b)
-            if (ra != rb) parent[rb] = ra
-        }
-
-        for (row in 0 until rows) {
-            for (column in 0 until columns) {
-                if (!occupied[row][column]) continue
-                if (column + 1 < columns && occupied[row][column + 1] &&
-                    hasContinuousVerticalBridge(
-                        pixels, screenWidth, screenHeight,
-                        gridLeft + (column + 1) * cellSize,
-                        gridTop + row * cellSize,
-                        cellSize,
-                    )
-                ) {
-                    union(index(row, column), index(row, column + 1))
-                }
-                if (row + 1 < rows && occupied[row + 1][column] &&
-                    hasContinuousHorizontalBridge(
-                        pixels, screenWidth, screenHeight,
-                        gridLeft + column * cellSize,
-                        gridTop + (row + 1) * cellSize,
-                        cellSize,
-                    )
-                ) {
-                    union(index(row, column), index(row + 1, column))
-                }
-            }
-        }
-
-        val groups = linkedMapOf<Int, MutableList<Pair<Int, Int>>>()
-        for (row in 0 until rows) {
-            for (column in 0 until columns) {
-                if (!occupied[row][column]) continue
-                groups.getOrPut(find(index(row, column))) { mutableListOf() } += row to column
-            }
-        }
-
-        return groups.values.map { cells ->
-            val minRow = cells.minOf { it.first }
-            val maxRow = cells.maxOf { it.first }
-            val minColumn = cells.minOf { it.second }
-            val maxColumn = cells.maxOf { it.second }
-            val rectangleCells = (maxRow - minRow + 1) * (maxColumn - minColumn + 1)
-            val rectangularity = cells.size.toFloat() / rectangleCells.toFloat()
-            Component(
-                minRow = minRow,
-                maxRow = maxRow,
-                minColumn = minColumn,
-                maxColumn = maxColumn,
-                confidence = (0.72f + 0.25f * rectangularity).coerceIn(0f, 0.97f),
-            )
-        }.filter { component ->
-            // 藏品应当接近矩形。零散亮点（触控圆点/特效）会在这里被过滤。
-            val width = component.maxColumn - component.minColumn + 1
-            val height = component.maxRow - component.minRow + 1
-            width in 1..6 && height in 1..6
-        }
+    private data class ItemContour(
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int,
+        val area: Int,
+    ) {
+        val width: Int get() = right - left + 1
+        val height: Int get() = bottom - top + 1
     }
 
     /**
-     * 同一个多格藏品跨过内部网格线时，边界附近通常是近乎均匀的灰色填充；
-     * 两个相邻但独立的藏品在接缝处会出现圆角、亮边和暗缝，亮度方差明显更大。
-     * 仅看平均亮度会把相邻藏品错误合并，所以这里同时限制方差。
+     * 直接寻找仓库里的灰/彩色亮矩形。
+     *
+     * 游戏仓库背景和网格线很暗，而藏品实体是一整块明显更亮的矩形。以连通域而不是
+     * 单格中心作为识别单位，可以完整保留跨格藏品尺寸，也不会把相邻独立藏品强行合并。
      */
-    private fun hasContinuousVerticalBridge(
+    private fun detectItemContours(
         pixels: IntArray,
-        width: Int,
-        height: Int,
-        boundaryX: Float,
-        cellTop: Float,
+        screenWidth: Int,
+        screenHeight: Int,
+        gridLeft: Int,
+        gridTop: Int,
+        gridRight: Int,
+        gridBottom: Int,
         cellSize: Float,
-    ): Boolean {
-        val x0 = (boundaryX - cellSize * 0.08f).roundToInt().coerceIn(0, width - 1)
-        val x1 = (boundaryX + cellSize * 0.08f).roundToInt().coerceIn(x0 + 1, width)
-        val y0 = (cellTop + cellSize * 0.15f).roundToInt().coerceIn(0, height - 1)
-        val y1 = (cellTop + cellSize * 0.85f).roundToInt().coerceIn(y0 + 1, height)
-        return isUniformBrightBridge(pixels, width, x0, y0, x1, y1)
-    }
+    ): List<ItemContour> {
+        if (gridLeft !in 0 until screenWidth || gridTop !in 0 until screenHeight) return emptyList()
+        if (gridRight <= gridLeft || gridBottom <= gridTop) return emptyList()
 
-    private fun hasContinuousHorizontalBridge(
-        pixels: IntArray,
-        width: Int,
-        height: Int,
-        cellLeft: Float,
-        boundaryY: Float,
-        cellSize: Float,
-    ): Boolean {
-        val x0 = (cellLeft + cellSize * 0.15f).roundToInt().coerceIn(0, width - 1)
-        val x1 = (cellLeft + cellSize * 0.85f).roundToInt().coerceIn(x0 + 1, width)
-        val y0 = (boundaryY - cellSize * 0.08f).roundToInt().coerceIn(0, height - 1)
-        val y1 = (boundaryY + cellSize * 0.08f).roundToInt().coerceIn(y0 + 1, height)
-        return isUniformBrightBridge(pixels, width, x0, y0, x1, y1)
-    }
+        val regionWidth = gridRight - gridLeft
+        val regionHeight = gridBottom - gridTop
+        val pixelCount = regionWidth * regionHeight
+        if (pixelCount <= 0) return emptyList()
 
-    private fun isUniformBrightBridge(
-        pixels: IntArray,
-        width: Int,
-        x0: Int,
-        y0: Int,
-        x1: Int,
-        y1: Int,
-    ): Boolean {
-        var sum = 0L
-        var sumSquares = 0L
-        var count = 0
-        for (y in y0 until y1) {
-            val offset = y * width
-            for (x in x0 until x1) {
-                val value = luma(pixels[offset + x])
-                sum += value
-                sumSquares += value.toLong() * value.toLong()
-                count++
+        // 取仓库背景亮度的 75 分位做自适应基线；至少 48，避免暗网格/背景被连进来。
+        val samples = ArrayList<Int>((regionWidth / 4 + 1) * (regionHeight / 4 + 1))
+        var sy = gridTop
+        while (sy < gridBottom) {
+            var sx = gridLeft
+            while (sx < gridRight) {
+                samples += luma(pixels[sy * screenWidth + sx])
+                sx += 4
+            }
+            sy += 4
+        }
+        samples.sort()
+        val p75 = if (samples.isEmpty()) 0 else samples[(samples.size * 3 / 4).coerceAtMost(samples.lastIndex)]
+        val threshold = (p75 + 20).coerceIn(48, 68)
+
+        val foreground = BooleanArray(pixelCount)
+        for (ry in 0 until regionHeight) {
+            val sourceOffset = (gridTop + ry) * screenWidth + gridLeft
+            val targetOffset = ry * regionWidth
+            for (rx in 0 until regionWidth) {
+                foreground[targetOffset + rx] = luma(pixels[sourceOffset + rx]) >= threshold
             }
         }
-        if (count == 0) return false
-        val mean = sum.toDouble() / count.toDouble()
-        val variance = (sumSquares.toDouble() / count.toDouble()) - mean * mean
-        return mean >= 36.0 && variance <= 25.0
+
+        val visited = BooleanArray(pixelCount)
+        val queue = IntArray(pixelCount)
+        val contours = mutableListOf<ItemContour>()
+        val minArea = (cellSize * cellSize * 0.18f).roundToInt().coerceAtLeast(40)
+        val minSpan = cellSize * 0.45f
+        val maxSpan = cellSize * 6.45f
+
+        for (seed in 0 until pixelCount) {
+            if (!foreground[seed] || visited[seed]) continue
+
+            var head = 0
+            var tail = 0
+            queue[tail++] = seed
+            visited[seed] = true
+
+            var minX = regionWidth
+            var maxX = -1
+            var minY = regionHeight
+            var maxY = -1
+            var area = 0
+
+            while (head < tail) {
+                val index = queue[head++]
+                val x = index % regionWidth
+                val y = index / regionWidth
+                area++
+                if (x < minX) minX = x
+                if (x > maxX) maxX = x
+                if (y < minY) minY = y
+                if (y > maxY) maxY = y
+
+                for (dy in -1..1) {
+                    for (dx in -1..1) {
+                        if (dx == 0 && dy == 0) continue
+                        val nx = x + dx
+                        val ny = y + dy
+                        if (nx !in 0 until regionWidth || ny !in 0 until regionHeight) continue
+                        val next = ny * regionWidth + nx
+                        if (foreground[next] && !visited[next]) {
+                            visited[next] = true
+                            queue[tail++] = next
+                        }
+                    }
+                }
+            }
+
+            val spanWidth = maxX - minX + 1
+            val spanHeight = maxY - minY + 1
+            if (area < minArea) continue
+            if (spanWidth < minSpan || spanHeight < minSpan) continue
+            if (spanWidth > maxSpan || spanHeight > maxSpan) continue
+
+            val widthCells = spanWidth / cellSize
+            val heightCells = spanHeight / cellSize
+            val roundedWidth = widthCells.roundToInt().coerceIn(1, 6)
+            val roundedHeight = heightCells.roundToInt().coerceIn(1, 6)
+            if (abs(widthCells - roundedWidth) > 0.38f || abs(heightCells - roundedHeight) > 0.38f) {
+                continue
+            }
+
+            contours += ItemContour(
+                left = gridLeft + minX,
+                top = gridTop + minY,
+                right = gridLeft + maxX,
+                bottom = gridTop + maxY,
+                area = area,
+            )
+        }
+
+        return contours.sortedWith(compareBy<ItemContour> { it.top }.thenBy { it.left })
     }
 
     private fun classifyQuality(
@@ -392,12 +391,14 @@ class WarehouseSnapshotRecognizer {
             }
         }
         if (count == 0) return WarehouseQualityUi.UNKNOWN
+
         val avg = Color.rgb((r / count).toInt(), (g / count).toInt(), (b / count).toInt())
         val hsv = FloatArray(3)
         Color.colorToHSV(avg, hsv)
         val hue = hsv[0]
         val saturation = hsv[1]
         val value = hsv[2]
+
         if (saturation < 0.22f) {
             return if (value >= 0.62f) WarehouseQualityUi.WHITE else WarehouseQualityUi.UNKNOWN
         }
