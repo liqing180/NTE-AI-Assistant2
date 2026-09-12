@@ -93,6 +93,19 @@ object AuctionStateStore {
         _state.update { it.copy(warehouse = warehouse) }
     }
 
+    fun correctItemQuality(itemId: String, quality: WarehouseQualityUi) {
+        _state.update { state ->
+            state.copy(
+                warehouse = state.warehouse.copy(
+                    items = state.warehouse.items.map { item ->
+                        if (item.id == itemId) item.copy(quality = quality, confidence = 1f) else item
+                    },
+                ),
+                statusText = "已人工修正藏品 $itemId",
+            )
+        }
+    }
+
     fun nextRound() {
         _state.update {
             val next = (it.round + 1).coerceAtMost(6)
