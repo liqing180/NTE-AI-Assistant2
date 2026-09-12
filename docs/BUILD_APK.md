@@ -1,112 +1,135 @@
 # APK 打包说明
 
-本项目 Android 模块为 `:app`，当前配置：
+当前 Android 构建基线：
 
-- `compileSdk = 37`
-- `targetSdk = 37`
+- `compileSdk = 36`
+- `targetSdk = 36`
 - `minSdk = 29`
 - Java/JDK 17
 - Gradle 9.3.1
+- Compose BOM `2025.12.00`（Compose 1.10 系列）
 
-> 当前仓库保留了 `gradle/wrapper/gradle-wrapper.properties`，但 Milestone 1 原始工程没有生成 `gradle-wrapper.jar / gradlew / gradlew.bat`。下面提供不依赖全局 Gradle 的初始化命令。初始化一次后，后续直接使用 `gradlew` 即可。
+> Compose 1.12+ 要求 `compileSdk 37`。当前 GitHub Hosted Runner 的稳定 Android SDK 仓库无法安装 `platforms;android-37`，因此项目固定使用 API 36 + Compose 1.10。该组合已在 GitHub Actions 实际验证可以完成 Debug APK 构建。
 
-## 1. Windows 11：从零初始化并打 Debug APK
+## GitHub 在线手动打包
 
-在 PowerShell 中进入项目根目录：
+仓库已经配置：
+
+```text
+.github/workflows/build-apk.yml
+```
+
+它只响应 `workflow_dispatch`，不会在 push / PR 时自动打包。
+
+操作：
+
+1. 打开仓库 `liqing180/NTE-AI-Assistant2`。
+2. 进入 **Actions**。
+3. 选择 **Build APK**。
+4. 点击 **Run workflow**。
+5. 选择 `debug` 或 `release`。
+6. 构建成功后，在该次 Run 页面底部 **Artifacts** 下载 APK。
+
+云端会依次执行：
+
+```text
+Checkout
+→ JDK 17
+→ Android SDK 36 / Build Tools 36.0.0
+→ Gradle 9.3.1
+→ :core:test
+→ :app:assembleDebug 或 :app:assembleRelease
+→ Upload Artifact
+```
+
+Debug Artifact 中的 APK：
+
+```text
+NTE-Auction-Assistant-debug.apk
+```
+
+Release 为未签名包：
+
+```text
+NTE-Auction-Assistant-release-unsigned.apk
+```
+
+## Windows 11 本地打 Debug APK
+
+PowerShell：
 
 ```powershell
 cd D:\path\to\NTE-AI-Assistant2
-```
 
-确认 JDK：
-
-```powershell
-java -version
-```
-
-推荐 JDK 17。如果使用 Android Studio 自带 JBR，可临时设置：
-
-```powershell
 $env:JAVA_HOME="C:\Program Files\Android\Android Studio\jbr"
 $env:Path="$env:JAVA_HOME\bin;$env:Path"
-java -version
-```
 
-设置 Android SDK 路径。默认通常是：
-
-```powershell
 $AndroidSdk="$env:LOCALAPPDATA\Android\Sdk"
 "sdk.dir=$($AndroidSdk -replace '\\','\\')" | Set-Content -Encoding ASCII .\local.properties
 ```
 
-如果当前目录还没有 `gradlew.bat`，下载 Gradle 9.3.1 并生成 Wrapper：
+如果仓库中还没有可用的 Gradle Wrapper，可先生成：
 
 ```powershell
 $GradleVersion="9.3.1"
 $GradleZip="$env:TEMP\gradle-$GradleVersion-bin.zip"
 $GradleHome="$env:TEMP\gradle-$GradleVersion"
 
-Invoke-WebRequest `
-  "https://services.gradle.org/distributions/gradle-$GradleVersion-bin.zip" `
-  -OutFile $GradleZip
-
+Invoke-WebRequest "https://services.gradle.org/distributions/gradle-$GradleVersion-bin.zip" -OutFile $GradleZip
 if (Test-Path $GradleHome) { Remove-Item $GradleHome -Recurse -Force }
 Expand-Archive $GradleZip -DestinationPath $env:TEMP -Force
-
 $env:Path="$GradleHome\bin;$env:Path"
-gradle --version
 gradle wrapper --gradle-version $GradleVersion
 ```
 
-检查 Wrapper：
+安装 Android API 36（如本机尚未安装）：
 
 ```powershell
-.\gradlew.bat --version
+& "$AndroidSdk\cmdline-tools\latest\bin\sdkmanager.bat" `
+  "platform-tools" `
+  "platforms;android-36" `
+  "build-tools;36.0.0"
 ```
 
-打 Debug APK：
+运行核心测试：
+
+```powershell
+.\gradlew.bat :core:test
+```
+
+构建 Debug APK：
 
 ```powershell
 .\gradlew.bat clean :app:assembleDebug
 ```
 
-生成文件：
+输出：
 
 ```text
 app\build\outputs\apk\debug\app-debug.apk
 ```
 
-连接 Android 手机并安装：
+安装到连接的手机：
 
 ```powershell
-adb devices
-adb install -r .\app\build\outputs\apk\debug\app-debug.apk
-```
-
-如果 `adb` 不在 PATH：
-
-```powershell
-& "$AndroidSdk\platform-tools\adb.exe" devices
 & "$AndroidSdk\platform-tools\adb.exe" install -r .\app\build\outputs\apk\debug\app-debug.apk
 ```
 
-## 2. Windows：Release APK
+## Release APK
 
-先构建未签名 Release：
+构建未签名 Release：
 
 ```powershell
 .\gradlew.bat clean :app:assembleRelease
 ```
 
-通常输出：
+输出通常为：
 
 ```text
 app\build\outputs\apk\release\app-release-unsigned.apk
 ```
 
-### 2.1 第一次创建签名证书
-
-只做一次：
+首次创建签名证书：
 
 ```powershell
 New-Item -ItemType Directory -Force .\keystore | Out-Null
@@ -118,72 +141,33 @@ keytool -genkeypair -v `
   -validity 10000
 ```
 
-`keystore/` 已加入 `.gitignore`，不要上传私钥和密码。
+`keystore/` 不应提交到 GitHub。
 
-### 2.2 zipalign + apksigner
-
-自动寻找本机最新 Android Build Tools：
+签名：
 
 ```powershell
 $AndroidSdk="$env:LOCALAPPDATA\Android\Sdk"
-$BuildTools=(Get-ChildItem "$AndroidSdk\build-tools" -Directory | Sort-Object Name -Descending | Select-Object -First 1).FullName
+$BuildTools="$AndroidSdk\build-tools\36.0.0"
 $Unsigned=".\app\build\outputs\apk\release\app-release-unsigned.apk"
 $Aligned=".\app\build\outputs\apk\release\app-release-aligned.apk"
 $Signed=".\app\build\outputs\apk\release\NTE-Auction-Assistant-release.apk"
 
 & "$BuildTools\zipalign.exe" -p -f 4 $Unsigned $Aligned
-
 & "$BuildTools\apksigner.bat" sign `
   --ks .\keystore\nte-release.jks `
   --ks-key-alias nte `
   --out $Signed `
   $Aligned
-
 & "$BuildTools\apksigner.bat" verify --verbose --print-certs $Signed
 ```
 
-最终可安装 APK：
+## macOS / Linux
 
-```text
-app\build\outputs\apk\release\NTE-Auction-Assistant-release.apk
-```
-
-安装验证：
-
-```powershell
-& "$AndroidSdk\platform-tools\adb.exe" install -r .\app\build\outputs\apk\release\NTE-Auction-Assistant-release.apk
-```
-
-## 3. macOS / Linux
-
-项目根目录：
+安装好 JDK 17 和 Android SDK 36 后：
 
 ```bash
-cd /path/to/NTE-AI-Assistant2
-```
-
-如果没有 `./gradlew`，初始化 Wrapper：
-
-```bash
-GRADLE_VERSION=9.3.1
-TMP_DIR="${TMPDIR:-/tmp}"
-curl -L "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "$TMP_DIR/gradle.zip"
-unzip -q -o "$TMP_DIR/gradle.zip" -d "$TMP_DIR"
-export PATH="$TMP_DIR/gradle-${GRADLE_VERSION}/bin:$PATH"
-gradle wrapper --gradle-version "$GRADLE_VERSION"
-chmod +x ./gradlew
-```
-
-Debug：
-
-```bash
+./gradlew :core:test
 ./gradlew clean :app:assembleDebug
-```
-
-Release 未签名：
-
-```bash
-./gradlew clean :app:assembleRelease
 ```
 
 Debug 输出：
@@ -192,74 +176,14 @@ Debug 输出：
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Release 输出：
-
-```text
-app/build/outputs/apk/release/app-release-unsigned.apk
-```
-
-## 4. 常用构建命令
+## 常用命令
 
 ```powershell
-# 清理
 .\gradlew.bat clean
-
-# 只编译核心 Kotlin 模块
-.\gradlew.bat :core:build
-
-# 核心测试
 .\gradlew.bat :core:test
-
-# Debug APK
+.\gradlew.bat :core:build
 .\gradlew.bat :app:assembleDebug
-
-# Release APK
 .\gradlew.bat :app:assembleRelease
-
-# 查看依赖
 .\gradlew.bat :app:dependencies
-
-# 查看所有任务
 .\gradlew.bat tasks
 ```
-
-macOS/Linux 将 `.\gradlew.bat` 换成 `./gradlew`。
-
-## 5. Android Studio 打包
-
-如果命令行环境还未配置完成，也可以：
-
-1. Android Studio 打开仓库根目录。
-2. 设置 Gradle JDK 为 JDK 17 / Android Studio JBR。
-3. 等待 Gradle Sync。
-4. Debug：`Build > Build APK(s)`。
-5. 正式签名包：`Build > Generate Signed App Bundle or APK > APK`。
-
-## 6. 常见问题
-
-### `SDK location not found`
-
-创建 `local.properties`：
-
-```properties
-sdk.dir=C:\\Users\\你的用户名\\AppData\\Local\\Android\\Sdk
-```
-
-### `JAVA_HOME is not set`
-
-PowerShell：
-
-```powershell
-$env:JAVA_HOME="C:\Program Files\Android\Android Studio\jbr"
-$env:Path="$env:JAVA_HOME\bin;$env:Path"
-```
-
-### `SDK platform android-37 not found`
-
-Android Studio 的 SDK Manager 安装 Android API 37；或使用 `sdkmanager`：
-
-```powershell
-& "$env:LOCALAPPDATA\Android\Sdk\cmdline-tools\latest\bin\sdkmanager.bat" "platforms;android-37" "platform-tools" "build-tools;37.0.0"
-```
-
-如果本机实际可用的 Build Tools 版本不同，在 SDK Manager 安装一个可用版本即可；Gradle 通常会自动选择兼容版本。
