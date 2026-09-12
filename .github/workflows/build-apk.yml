@@ -11,13 +11,16 @@ on:
         options:
           - debug
           - release
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
   build-apk:
-    name: Build ${{ inputs.build_type }} APK
+    name: Build ${{ inputs.build_type || 'debug' }} APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -55,12 +58,12 @@ jobs:
         run: gradle :core:test --stacktrace
 
       - name: Build Debug APK
-        if: ${{ inputs.build_type == 'debug' }}
+        if: ${{ github.event_name == 'push' || inputs.build_type == 'debug' }}
         shell: bash
         run: gradle :app:assembleDebug --stacktrace
 
       - name: Build Release APK (unsigned)
-        if: ${{ inputs.build_type == 'release' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_type == 'release' }}
         shell: bash
         run: gradle :app:assembleRelease --stacktrace
 
@@ -69,7 +72,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          if [ "${{ inputs.build_type }}" = "release" ]; then
+          BUILD_TYPE="${{ inputs.build_type || 'debug' }}"
+          if [ "$BUILD_TYPE" = "release" ]; then
             cp app/build/outputs/apk/release/app-release-unsigned.apk dist/NTE-Auction-Assistant-release-unsigned.apk
           else
             cp app/build/outputs/apk/debug/app-debug.apk dist/NTE-Auction-Assistant-debug.apk
@@ -79,7 +83,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: NTE-Auction-Assistant-${{ inputs.build_type }}-${{ github.run_number }}
+          name: NTE-Auction-Assistant-${{ inputs.build_type || 'debug' }}-${{ github.run_number }}
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 30
@@ -90,11 +94,7 @@ jobs:
           {
             echo "## APK build complete"
             echo
-            echo "- Build type: **${{ inputs.build_type }}**"
+            echo "- Build type: **${{ inputs.build_type || 'debug' }}**"
             echo "- Core tests: **passed**"
             echo "- Android compile/target SDK: **36**"
-            echo "- Download: open this workflow run and download the artifact under **Artifacts**"
-            if [ "${{ inputs.build_type }}" = "release" ]; then
-              echo "- Note: release APK is **unsigned** and must be signed before normal distribution/install."
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
