@@ -1,5 +1,10 @@
 package com.nte.auction.helper
 
+import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -8,11 +13,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.nte.auction.ui.WarehouseQualityUi
 import com.nte.auction.ui.WarehouseUiModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun HelperAnalysisPanel(
@@ -112,6 +123,27 @@ fun HelperAnalysisPanel(
 
 @Composable
 private fun HelperWarehouseCandidatePanel(helper: HelperFeatureUiState, warehouse: WarehouseUiModel) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var imageRevision by remember { mutableIntStateOf(0) }
+    var imagePackStatus by remember { mutableStateOf("") }
+    val imageStats = remember(imageRevision) { HelperReferenceImageStore.stats(context) }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                imagePackStatus = "正在导入参考图…"
+                val result = withContext(Dispatchers.IO) {
+                    runCatching { HelperReferenceImageStore.importZip(context, uri) }
+                }
+                result.onSuccess { imported ->
+                    imageRevision++
+                    imagePackStatus = "已导入 ${imported.totalCount} 张（金 ${imported.goldCount} / 红 ${imported.redCount}），跳过 ${imported.skippedCount}"
+                }.onFailure { error ->
+                    imagePackStatus = "参考图导入失败：${error.message ?: error::class.java.simpleName}"
+                }
+            }
+        }
+    }
     val highValue = warehouse.items.filter {
         it.quality == WarehouseQualityUi.GOLD || it.quality == WarehouseQualityUi.RED
     }
@@ -119,7 +151,27 @@ private fun HelperWarehouseCandidatePanel(helper: HelperFeatureUiState, warehous
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Text("仓库候选确认", fontWeight = FontWeight.Bold)
             Text(
-                "自动仓库识别负责尺寸/品质；这里按尺寸筛选原项目目录并确认具体藏品。",
+                "自动仓库识别负责尺寸/品质；按尺寸筛候选后，用参考图对照游戏中已经显示的具体藏品。",
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        importLauncher.launch(
+                            arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
+                        )
+                    },
+                ) { Text("导入参考图 ZIP") }
+                Text(
+                    "参考图 金 ${imageStats.goldCount} / 红 ${imageStats.redCount}",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            if (imagePackStatus.isNotBlank()) {
+                Text(imagePackStatus, style = MaterialTheme.typography.labelSmall)
+            }
+            Text(
+                "兼容目录：database/gold_items/<价格>.png、database/red_items/<价格>.png，也支持 gold/ 与 red/。",
                 style = MaterialTheme.typography.labelSmall,
             )
             if (highValue.isEmpty()) {
@@ -139,19 +191,75 @@ private fun HelperWarehouseCandidatePanel(helper: HelperFeatureUiState, warehous
                         TextButton(onClick = { HelperFeatureStore.clearWarehouseItemSelection(item.id) }) { Text("清除") }
                     }
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    HelperFeatureStore.candidatesForWarehouseItem(item.id).forEach { candidate ->
-                        FilterChip(
-                            selected = selected?.price == candidate.price,
-                            onClick = { HelperFeatureStore.selectWarehouseItem(item.id, candidate.price) },
-                            label = { Text("${candidate.name} ${candidate.price}") },
-                        )
+                val candidates = HelperFeatureStore.candidatesForWarehouseItem(item.id)
+                if (candidates.isEmpty()) {
+                    Text("该尺寸没有匹配候选", style = MaterialTheme.typography.labelSmall)
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        candidates.forEach { candidate ->
+                            HelperWarehouseCandidateCard(
+                                candidate = candidate,
+                                selected = selected?.price == candidate.price,
+                                imageRevision = imageRevision,
+                                onClick = { HelperFeatureStore.selectWarehouseItem(item.id, candidate.price) },
+                            )
+                        }
                     }
                 }
                 HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable
+private fun HelperWarehouseCandidateCard(
+    candidate: HelperCatalogItem,
+    selected: Boolean,
+    imageRevision: Int,
+    onClick: () -> Unit,
+) {
+    val context = LocalContext.current
+    val imageFile = remember(candidate.quality, candidate.price, imageRevision) {
+        HelperReferenceImageStore.resolveImageFile(context, candidate.quality, candidate.price)
+    }
+    val bitmap = remember(imageFile?.absolutePath, imageFile?.lastModified(), imageRevision) {
+        imageFile?.let { BitmapFactory.decodeFile(it.absolutePath) }?.asImageBitmap()
+    }
+    Card(
+        modifier = Modifier.width(168.dp).clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = candidate.name,
+                    modifier = Modifier.fillMaxWidth().height(96.dp),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(96.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("暂无参考图", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(candidate.name, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "${candidate.price} · ${candidate.width}×${candidate.height}",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                if (selected) {
+                    Text("当前已确认", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
     }
