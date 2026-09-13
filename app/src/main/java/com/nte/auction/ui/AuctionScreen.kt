@@ -39,7 +39,7 @@ fun AuctionScreen(
                 Text("即刻落槌 · 真珠场估价", style = MaterialTheme.typography.headlineSmall)
                 Text(state.statusText, style = MaterialTheme.typography.bodyMedium)
 
-                PrimaryTabRow(selectedTabIndex = selectedTab) {
+                TabRow(selectedTabIndex = selectedTab) {
                     Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("总览") })
                     Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("拍卖分析") })
                     Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }, text = { Text("记忆池") })
