@@ -23,6 +23,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import com.nte.auction.helper.HelperOverlayPanel
 import kotlin.math.floor
 import kotlin.math.roundToInt
 
@@ -83,6 +84,7 @@ fun AuctionOverlayContent(
                 )
 
                 EstimateSummary(state)
+                HelperOverlayPanel(state.captureAuthorized)
 
                 if (state.scanCoverage > 0.0 || state.scanState.name == "SCANNING") {
                     LinearProgressIndicator(
