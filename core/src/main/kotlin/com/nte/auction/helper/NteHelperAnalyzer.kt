@@ -102,6 +102,7 @@ class NteHelperAnalyzer(
 
             val range = estimateTotalRange(
                 request = request,
+                goldCount = goldCount,
                 redCount = redCount,
                 conditionedRedModel = conditioned,
                 regionEstimates = regionEstimates,
@@ -245,11 +246,12 @@ class NteHelperAnalyzer(
 
     private fun estimateTotalRange(
         request: HelperAnalyzeRequest,
+        goldCount: Int,
         redCount: Int,
         conditionedRedModel: HelperRedModel,
         regionEstimates: List<HelperRegionEstimate>,
     ): ValueRange {
-        val goldTotal = (request.goldAverage * resolveCurrentGoldCount(request, redCount)).toLong()
+        val goldTotal = (request.goldAverage * goldCount).toLong()
         val knownRedSum = request.knownRedPrices.sum()
         val regionLow = regionEstimates.sumOf { it.lowValue ?: 0L }
         val regionMid = regionEstimates.sumOf { it.estimatedValue ?: 0L }
@@ -261,12 +263,6 @@ class NteHelperAnalyzer(
             mid = goldTotal + knownRedSum + regionMid + unknown.mid,
             high = goldTotal + knownRedSum + regionHigh + unknown.high,
         )
-    }
-
-    private fun resolveCurrentGoldCount(request: HelperAnalyzeRequest, redCount: Int): Int {
-        request.knownGoldCount?.takeIf { it > 0 }?.let { return it }
-        request.totalItems?.let { return (it - request.purpleCount - redCount).coerceAtLeast(0) }
-        return 0
     }
 
     private fun estimateUnknownRedSum(
