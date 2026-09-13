@@ -16,6 +16,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.view.Surface
 import android.view.WindowManager
+import com.nte.auction.helper.HelperAuctionStatsRecognizer
+import com.nte.auction.helper.HelperFeatureStore
 import com.nte.auction.ui.AuctionStateStore
 
 class ProjectionCaptureService : Service() {
@@ -24,6 +26,7 @@ class ProjectionCaptureService : Service() {
     private var imageReader: ImageReader? = null
     private var lastEmitMs = 0L
     private val warehouseRecognizer = WarehouseSnapshotRecognizer()
+    private val helperStatsRecognizer = HelperAuctionStatsRecognizer()
     private var captureInfo: String = "capture not initialized"
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -166,13 +169,7 @@ class ProjectionCaptureService : Service() {
                             "未识别到仓库：截图 ${frame.width}×${frame.height}；请点“导出诊断包”发给开发者"
                         )
                     } else {
-                        // 诊断包曾出现“recognizer SUCCESS，但虚拟仓库仍为 0 件”。
-                        // 原因无法从旧包判断，因为旧逻辑在状态合并前就先写 SUCCESS；
-                        // 如果 apply 阶段抛错，诊断只会留下一个误导性的成功记录。
-                        // 现在把识别 + 状态合并拆开保护，并且只在合并成功后记录 SUCCESS。
-                        val applyAttempt = runCatching {
-                            AuctionStateStore.applyWarehouseSnapshot(result)
-                        }
+                        val applyAttempt = runCatching { AuctionStateStore.applyWarehouseSnapshot(result) }
                         val applyError = applyAttempt.exceptionOrNull()
                         if (applyError != null) {
                             WarehouseDiagnostics.recordRecognition(
@@ -195,6 +192,24 @@ class ProjectionCaptureService : Service() {
                                     "warehouseItems=${state.warehouse.items.size} items=" +
                                     result.items.joinToString { "${it.stableId}:${it.quality}:${it.confidence}" }
                             )
+                        }
+                    }
+                }
+
+                // OCR is asynchronous. Give ML Kit its own immutable copy because FrameHub
+                // may recycle the shared frame immediately when there are no subscribers.
+                if (HelperFeatureStore.consumeStatsScanRequest()) {
+                    val ocrBitmap = frame.copy(Bitmap.Config.ARGB_8888, false)
+                    helperStatsRecognizer.recognize(ocrBitmap) { attempt ->
+                        try {
+                            attempt.onSuccess(HelperFeatureStore::applyOcrFields)
+                                .onFailure { error ->
+                                    HelperFeatureStore.failStatsScan(
+                                        "屏幕识别失败：${error.message ?: error::class.java.simpleName}"
+                                    )
+                                }
+                        } finally {
+                            if (!ocrBitmap.isRecycled) ocrBitmap.recycle()
                         }
                     }
                 }
