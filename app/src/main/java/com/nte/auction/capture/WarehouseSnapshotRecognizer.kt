@@ -157,6 +157,21 @@ class WarehouseSnapshotRecognizer {
                 return@mapNotNull null
             }
 
+            // 这批诊断图暴露出大量“纯灰占位块”会被亮度连通域误认为藏品。
+            // 真正藏品的内部至少包含图标纹理，或品质底色带来的明显色彩；灰块中央则几乎完全平坦。
+            if (!hasItemVisualDetail(
+                    pixels = pixels,
+                    screenWidth = width,
+                    screenHeight = height,
+                    left = contour.left.toFloat(),
+                    top = contour.top.toFloat(),
+                    itemWidth = contour.width.toFloat(),
+                    itemHeight = contour.height.toFloat(),
+                )
+            ) {
+                return@mapNotNull null
+            }
+
             val widthError = abs(contour.width / cellSize - itemWidth)
             val heightError = abs(contour.height / cellSize - itemHeight)
             val sizeFit = (1f - ((widthError + heightError) / 1.2f)).coerceIn(0f, 1f)
@@ -367,6 +382,57 @@ class WarehouseSnapshotRecognizer {
     }
 
     /**
+     * 过滤只有灰色渐变/描边、内部没有真实图标内容的占位块。
+     * 仅检测中央区域，刻意避开矩形边框；这样白色品质的真实藏品仍可依靠图标明暗纹理通过。
+     */
+    private fun hasItemVisualDetail(
+        pixels: IntArray,
+        screenWidth: Int,
+        screenHeight: Int,
+        left: Float,
+        top: Float,
+        itemWidth: Float,
+        itemHeight: Float,
+    ): Boolean {
+        val x0 = (left + itemWidth * 0.18f).roundToInt().coerceIn(0, screenWidth - 1)
+        val x1 = (left + itemWidth * 0.82f).roundToInt().coerceIn(x0 + 1, screenWidth)
+        val y0 = (top + itemHeight * 0.18f).roundToInt().coerceIn(0, screenHeight - 1)
+        val y1 = (top + itemHeight * 0.82f).roundToInt().coerceIn(y0 + 1, screenHeight)
+
+        val luminanceSamples = ArrayList<Int>()
+        var colorfulSamples = 0
+        var sampleCount = 0
+        for (y in y0 until y1 step 2) {
+            val offset = y * screenWidth
+            for (x in x0 until x1 step 2) {
+                val color = pixels[offset + x]
+                luminanceSamples += luma(color)
+
+                val red = Color.red(color)
+                val green = Color.green(color)
+                val blue = Color.blue(color)
+                val maxChannel = maxOf(red, green, blue)
+                val minChannel = minOf(red, green, blue)
+                if (maxChannel >= 45 &&
+                    (maxChannel - minChannel).toFloat() / maxChannel.toFloat() >= DETAIL_SATURATION_MIN
+                ) {
+                    colorfulSamples++
+                }
+                sampleCount++
+            }
+        }
+
+        if (luminanceSamples.size < 4 || sampleCount == 0) return false
+        luminanceSamples.sort()
+        val p10Index = (luminanceSamples.size / 10).coerceIn(0, luminanceSamples.lastIndex)
+        val p90Index = (luminanceSamples.size * 9 / 10).coerceIn(0, luminanceSamples.lastIndex)
+        val contrastSpan = luminanceSamples[p90Index] - luminanceSamples[p10Index]
+        val colorfulFraction = colorfulSamples.toFloat() / sampleCount.toFloat()
+
+        return contrastSpan >= DETAIL_LUMA_SPAN_MIN || colorfulFraction >= DETAIL_COLOR_FRACTION_MIN
+    }
+
+    /**
      * 仓库物品不能占用同一个网格位置。连通域阈值偶尔会在大物品内部再生成一个较小候选，
      * 这里在网格空间做一次冲突消解：被较大候选完整包含、且置信度没有明显优势的小候选直接丢弃；
      * 对剩余极少数重叠候选，再按置信度和覆盖面积综合选择。
@@ -414,6 +480,11 @@ class WarehouseSnapshotRecognizer {
         return rowStart < rowEnd && columnStart < columnEnd
     }
 
+    /**
+     * 品质颜色主要存在于藏品卡片的外圈底色。旧逻辑对中央区域做 RGB 平均，
+     * 银白色主体会把蓝色底色稀释成灰色，导致蓝色护甲被判 UNKNOWN。
+     * 现在只统计外圈，并按像素 HSV 投票，避免图标主体干扰。
+     */
     private fun classifyQuality(
         pixels: IntArray,
         screenWidth: Int,
@@ -423,43 +494,87 @@ class WarehouseSnapshotRecognizer {
         itemWidth: Float,
         itemHeight: Float,
     ): WarehouseQualityUi {
-        val x0 = (left + itemWidth * 0.20f).roundToInt().coerceIn(0, screenWidth - 1)
-        val x1 = (left + itemWidth * 0.80f).roundToInt().coerceIn(x0 + 1, screenWidth)
-        val y0 = (top + itemHeight * 0.20f).roundToInt().coerceIn(0, screenHeight - 1)
-        val y1 = (top + itemHeight * 0.80f).roundToInt().coerceIn(y0 + 1, screenHeight)
+        val x0 = left.roundToInt().coerceIn(0, screenWidth - 1)
+        val x1 = (left + itemWidth).roundToInt().coerceIn(x0 + 1, screenWidth)
+        val y0 = top.roundToInt().coerceIn(0, screenHeight - 1)
+        val y1 = (top + itemHeight).roundToInt().coerceIn(y0 + 1, screenHeight)
 
-        var r = 0L
-        var g = 0L
-        var b = 0L
-        var count = 0
+        val minDimension = minOf(x1 - x0, y1 - y0).toFloat()
+        val ringInner = maxOf(1f, minDimension * QUALITY_RING_INNER_FRACTION)
+        val ringOuter = maxOf(ringInner + 1f, minDimension * QUALITY_RING_OUTER_FRACTION)
+        val hsv = FloatArray(3)
+
+        var whiteVotes = 0
+        var redVotes = 0
+        var goldVotes = 0
+        var greenVotes = 0
+        var blueVotes = 0
+        var purpleVotes = 0
+        var eligibleVotes = 0
+
         for (y in y0 until y1 step 2) {
             val offset = y * screenWidth
             for (x in x0 until x1 step 2) {
+                val edgeDistance = minOf(
+                    (x - x0).toFloat(),
+                    (x1 - 1 - x).toFloat(),
+                    (y - y0).toFloat(),
+                    (y1 - 1 - y).toFloat(),
+                )
+                if (edgeDistance < ringInner || edgeDistance > ringOuter) continue
+
                 val color = pixels[offset + x]
-                r += Color.red(color)
-                g += Color.green(color)
-                b += Color.blue(color)
-                count++
+                Color.colorToHSV(color, hsv)
+                val hue = hsv[0]
+                val saturation = hsv[1]
+                val value = hsv[2]
+
+                val quality = when {
+                    saturation < 0.18f && value >= 0.58f -> WarehouseQualityUi.WHITE
+                    saturation < 0.20f || value < 0.18f -> null
+                    hue < 20f || hue >= 340f -> WarehouseQualityUi.RED
+                    hue in 20f..75f -> WarehouseQualityUi.GOLD
+                    hue in 80f..170f -> WarehouseQualityUi.GREEN
+                    hue in 180f..250f -> WarehouseQualityUi.BLUE
+                    hue in 250f..335f -> WarehouseQualityUi.PURPLE
+                    else -> null
+                }
+
+                when (quality) {
+                    WarehouseQualityUi.WHITE -> whiteVotes++
+                    WarehouseQualityUi.RED -> redVotes++
+                    WarehouseQualityUi.GOLD -> goldVotes++
+                    WarehouseQualityUi.GREEN -> greenVotes++
+                    WarehouseQualityUi.BLUE -> blueVotes++
+                    WarehouseQualityUi.PURPLE -> purpleVotes++
+                    else -> continue
+                }
+                eligibleVotes++
             }
         }
-        if (count == 0) return WarehouseQualityUi.UNKNOWN
 
-        val avg = Color.rgb((r / count).toInt(), (g / count).toInt(), (b / count).toInt())
-        val hsv = FloatArray(3)
-        Color.colorToHSV(avg, hsv)
-        val hue = hsv[0]
-        val saturation = hsv[1]
-        val value = hsv[2]
-
-        if (saturation < 0.22f) {
-            return if (value >= 0.62f) WarehouseQualityUi.WHITE else WarehouseQualityUi.UNKNOWN
+        if (eligibleVotes == 0) return WarehouseQualityUi.UNKNOWN
+        val maxVotes = listOf(
+            whiteVotes,
+            redVotes,
+            goldVotes,
+            greenVotes,
+            blueVotes,
+            purpleVotes,
+        ).maxOrNull() ?: 0
+        if (maxVotes < QUALITY_MIN_VOTES ||
+            maxVotes.toFloat() / eligibleVotes.toFloat() < QUALITY_MIN_DOMINANCE
+        ) {
+            return WarehouseQualityUi.UNKNOWN
         }
-        return when {
-            hue < 18f || hue >= 340f -> WarehouseQualityUi.RED
-            hue in 35f..65f -> WarehouseQualityUi.GOLD
-            hue in 80f..165f -> WarehouseQualityUi.GREEN
-            hue in 185f..250f -> WarehouseQualityUi.BLUE
-            hue in 255f..330f -> WarehouseQualityUi.PURPLE
+
+        return when (maxVotes) {
+            whiteVotes -> WarehouseQualityUi.WHITE
+            redVotes -> WarehouseQualityUi.RED
+            goldVotes -> WarehouseQualityUi.GOLD
+            greenVotes -> WarehouseQualityUi.GREEN
+            blueVotes -> WarehouseQualityUi.BLUE
+            purpleVotes -> WarehouseQualityUi.PURPLE
             else -> WarehouseQualityUi.UNKNOWN
         }
     }
@@ -473,5 +588,12 @@ class WarehouseSnapshotRecognizer {
         const val EDGE_TOUCH_FRACTION = 0.18f
         const val CONTAINED_CONFIDENCE_TOLERANCE = 0.12f
         const val GRID_AREA_PRIORITY_WEIGHT = 0.012f
+        const val DETAIL_LUMA_SPAN_MIN = 18
+        const val DETAIL_SATURATION_MIN = 0.12f
+        const val DETAIL_COLOR_FRACTION_MIN = 0.08f
+        const val QUALITY_RING_INNER_FRACTION = 0.04f
+        const val QUALITY_RING_OUTER_FRACTION = 0.22f
+        const val QUALITY_MIN_VOTES = 3
+        const val QUALITY_MIN_DOMINANCE = 0.45f
     }
 }
