@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feat/helper-port
   workflow_dispatch:
     inputs:
       build_type:
