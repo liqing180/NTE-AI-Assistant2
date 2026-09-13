@@ -3,6 +3,7 @@ name: Verify helper port
 on:
   push:
     branches:
+      - feat/helper-port
       - feat/helper-port-working
   workflow_dispatch:
 
