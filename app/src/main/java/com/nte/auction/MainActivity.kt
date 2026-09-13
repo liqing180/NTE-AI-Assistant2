@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.nte.auction.capture.ProjectionCaptureService
+import com.nte.auction.helper.HelperFeatureStore
 import com.nte.auction.overlay.AuctionOverlayService
 import com.nte.auction.ui.AuctionScreen
 import com.nte.auction.ui.AuctionViewModel
@@ -43,6 +44,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        HelperFeatureStore.initialize(this)
         overlayEnabled = Settings.canDrawOverlays(this)
         setContent {
             val state by viewModel.state.collectAsState()
@@ -54,6 +56,7 @@ class MainActivity : ComponentActivity() {
                 onNewAuction = viewModel::startNewAuction,
                 onUpdateWarehouse = viewModel::updateWarehouseFromScreenshot,
                 onNextRound = viewModel::nextRound,
+                onOpenAccessibilitySettings = ::openAccessibilitySettings,
             )
         }
     }
@@ -80,6 +83,10 @@ class MainActivity : ComponentActivity() {
             Uri.parse("package:$packageName"),
         )
         overlayLauncher.launch(intent)
+    }
+
+    private fun openAccessibilitySettings() {
+        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
     }
 
     private fun updateOverlayPermission(startWhenGranted: Boolean) {
