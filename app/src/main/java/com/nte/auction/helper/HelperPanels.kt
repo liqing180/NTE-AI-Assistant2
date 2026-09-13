@@ -3,15 +3,14 @@ package com.nte.auction.helper
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.nte.auction.domain.Quality
 import com.nte.auction.ui.WarehouseQualityUi
 import com.nte.auction.ui.WarehouseUiModel
 
@@ -32,24 +31,20 @@ fun HelperAnalysisPanel(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     NumericField(
                         label = "金色均价",
-                        value = helper.fields.goldAverage?.let { value ->
-                            if (value % 1.0 == 0.0) value.toLong().toString() else value.toString()
-                        }.orEmpty(),
+                        value = helper.fields.goldAverage?.let { if (it % 1.0 == 0.0) it.toLong().toString() else it.toString() }.orEmpty(),
                         modifier = Modifier.weight(1f),
-                        onChange = { HelperFeatureStore.setGoldAverage(it.toDoubleOrNull()) },
-                    )
+                        decimal = true,
+                    ) { HelperFeatureStore.setGoldAverage(it.toDoubleOrNull()) }
                     NumericField(
                         label = "总件数",
                         value = helper.fields.totalItems?.toString().orEmpty(),
                         modifier = Modifier.weight(1f),
-                        onChange = { HelperFeatureStore.setTotalItems(it.toIntOrNull()) },
-                    )
+                    ) { HelperFeatureStore.setTotalItems(it.toIntOrNull()) }
                     NumericField(
                         label = "紫色件数",
                         value = helper.fields.purpleCount.toString(),
                         modifier = Modifier.weight(1f),
-                        onChange = { HelperFeatureStore.setPurpleCount(it.toIntOrNull() ?: 0) },
-                    )
+                    ) { HelperFeatureStore.setPurpleCount(it.toIntOrNull() ?: 0) }
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -57,20 +52,17 @@ fun HelperAnalysisPanel(
                         label = "金色占格",
                         value = helper.fields.goldTotalCells?.toString().orEmpty(),
                         modifier = Modifier.weight(1f),
-                        onChange = { HelperFeatureStore.setGoldTotalCells(it.toIntOrNull()) },
-                    )
+                    ) { HelperFeatureStore.setGoldTotalCells(it.toIntOrNull()) }
                     NumericField(
                         label = "已知金件数",
                         value = helper.fields.knownGoldCount?.toString().orEmpty(),
                         modifier = Modifier.weight(1f),
-                        onChange = { HelperFeatureStore.setKnownGoldCount(it.toIntOrNull()) },
-                    )
+                    ) { HelperFeatureStore.setKnownGoldCount(it.toIntOrNull()) }
                     NumericField(
                         label = "已知红件数",
                         value = helper.fields.knownRedCount?.toString().orEmpty(),
                         modifier = Modifier.weight(1f),
-                        onChange = { HelperFeatureStore.setKnownRedCount(it.toIntOrNull()) },
-                    )
+                    ) { HelperFeatureStore.setKnownRedCount(it.toIntOrNull()) }
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -83,9 +75,8 @@ fun HelperAnalysisPanel(
                     NumericField(
                         label = "未知红色数",
                         value = helper.unknownRedCount.toString(),
-                        modifier = Modifier.width(120.dp),
-                        onChange = { HelperFeatureStore.setUnknownRedCount(it.toIntOrNull() ?: 0) },
-                    )
+                        modifier = Modifier.width(130.dp),
+                    ) { HelperFeatureStore.setUnknownRedCount(it.toIntOrNull() ?: 0) }
                 }
 
                 Text("红色估值模式", style = MaterialTheme.typography.labelMedium)
@@ -136,31 +127,28 @@ private fun HelperWarehouseCandidatePanel(helper: HelperFeatureUiState, warehous
             }
             highValue.forEach { item ->
                 val selected = helper.itemSelections[item.id]
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "${if (item.quality == WarehouseQualityUi.GOLD) "金" else "红"} ${item.width}×${item.height}",
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(selected?.let { "${it.name} · ${it.price}" } ?: "未确认", style = MaterialTheme.typography.labelMedium)
-                        Spacer(Modifier.weight(1f))
-                        if (selected != null) {
-                            TextButton(onClick = { HelperFeatureStore.clearWarehouseItemSelection(item.id) }) { Text("清除") }
-                        }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${if (item.quality == WarehouseQualityUi.GOLD) "金" else "红"} ${item.width}×${item.height}",
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(selected?.let { "${it.name} · ${it.price}" } ?: "未确认", style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.weight(1f))
+                    if (selected != null) {
+                        TextButton(onClick = { HelperFeatureStore.clearWarehouseItemSelection(item.id) }) { Text("清除") }
                     }
-                    val candidates = HelperFeatureStore.candidatesForWarehouseItem(item.id)
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        candidates.forEach { candidate ->
-                            FilterChip(
-                                selected = selected?.price == candidate.price,
-                                onClick = { HelperFeatureStore.selectWarehouseItem(item.id, candidate.price) },
-                                label = { Text("${candidate.name} ${candidate.price}") },
-                            )
-                        }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    HelperFeatureStore.candidatesForWarehouseItem(item.id).forEach { candidate ->
+                        FilterChip(
+                            selected = selected?.price == candidate.price,
+                            onClick = { HelperFeatureStore.selectWarehouseItem(item.id, candidate.price) },
+                            label = { Text("${candidate.name} ${candidate.price}") },
+                        )
                     }
                 }
                 HorizontalDivider()
@@ -176,43 +164,46 @@ private fun HelperAnalysisResults(result: HelperAnalysisResult?) {
             Text("估价结果", fontWeight = FontWeight.Bold)
             if (result == null) {
                 Text("等待分析", style = MaterialTheme.typography.bodySmall)
-                return@Column
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("红色均值 ${formatMoney(result.redMean)}")
-                Text("未知红均值 ${formatMoney(result.unknownRedMean)}")
-            }
-            if (result.unconfirmedRedSum > 0L) {
-                Text("未确认红色区域估值 ${formatMoney(result.unconfirmedRedSum)}", style = MaterialTheme.typography.labelMedium)
-            }
-            result.warning?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium) }
-            if (result.rows.isEmpty()) {
-                Text("没有符合当前约束的组合")
-            }
-            result.rows.forEach { row ->
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                    Column(Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("金 ${row.goldCount} · 红 ${row.redCount}${if (row.estimated) " · 估算" else ""}")
-                            Text(formatMoney(row.totalValue), fontWeight = FontWeight.Bold)
-                        }
-                        Text("区间 ${formatMoney(row.lowValue)} ～ ${formatMoney(row.highValue)} · 组合 ${row.comboCount}", style = MaterialTheme.typography.labelSmall)
-                        row.combos.forEachIndexed { index, combo ->
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("红色均值 ${formatMoney(result.redMean)}")
+                    Text("未知红均值 ${formatMoney(result.unknownRedMean)}")
+                }
+                if (result.unconfirmedRedSum > 0L) {
+                    Text("未确认红色区域估值 ${formatMoney(result.unconfirmedRedSum)}", style = MaterialTheme.typography.labelMedium)
+                }
+                result.warning?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                }
+                if (result.rows.isEmpty()) Text("没有符合当前约束的组合")
+                result.rows.forEach { row ->
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                        Column(Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("金 ${row.goldCount} · 红 ${row.redCount}${if (row.estimated) " · 估算" else ""}")
+                                Text(formatMoney(row.totalValue), fontWeight = FontWeight.Bold)
+                            }
                             Text(
-                                "${index + 1}. ${combo.prices.joinToString(" + ")} · 格数 ${combo.sizes.joinToString("+")}",
+                                "区间 ${formatMoney(row.lowValue)} ～ ${formatMoney(row.highValue)} · 组合 ${row.comboCount}",
                                 style = MaterialTheme.typography.labelSmall,
                             )
-                            Text(combo.names.joinToString(" / "), style = MaterialTheme.typography.labelSmall)
+                            row.combos.forEachIndexed { index, combo ->
+                                Text(
+                                    "${index + 1}. ${combo.prices.joinToString(" + ")} · 格数 ${combo.sizes.joinToString("+")}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                                Text(combo.names.joinToString(" / "), style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                     }
                 }
-            }
-            result.unconfirmedRedRegionEstimates.forEach { region ->
-                Text(
-                    "红 ${region.width}×${region.height}: ${region.candidateCount} 候选 · " +
-                        (region.estimatedValue?.let(::formatMoney) ?: "无法估算"),
-                    style = MaterialTheme.typography.labelSmall,
-                )
+                result.unconfirmedRedRegionEstimates.forEach { region ->
+                    Text(
+                        "红 ${region.width}×${region.height}: ${region.candidateCount} 候选 · " +
+                            (region.estimatedValue?.let(::formatMoney) ?: "无法估算"),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
             }
         }
     }
@@ -232,9 +223,12 @@ private fun HelperBidPanel(
                 label = "出价金额",
                 value = helper.bidAmount?.toString().orEmpty(),
                 modifier = Modifier.fillMaxWidth(),
-                onChange = { HelperFeatureStore.setBidAmount(it.toLongOrNull()) },
-            )
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            ) { HelperFeatureStore.setBidAmount(it.toLongOrNull()) }
+
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
                 listOf(2.0, 1.6, 1.3, 1.1).forEach { multiplier ->
                     OutlinedButton(onClick = { HelperBidController.multiply(multiplier) }) { Text("×$multiplier") }
                 }
@@ -261,26 +255,27 @@ private fun HelperBidPanel(
                     label = "新增金额",
                     value = customText,
                     modifier = Modifier.weight(1f),
-                    onChange = { customText = it },
-                )
+                ) { customText = it }
                 Button(onClick = {
                     customText.toLongOrNull()?.let(HelperFeatureStore::addCustomBid)
                     customText = ""
                 }) { Text("保存") }
             }
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
                 helper.customBids.forEach { value ->
-                    AssistChip(
-                        onClick = { HelperFeatureStore.setBidAmount(value) },
-                        label = { Text(value.toString()) },
-                        trailingIcon = {
-                            TextButton(
-                                onClick = { HelperFeatureStore.removeCustomBid(value) },
-                                contentPadding = PaddingValues(0.dp),
-                                modifier = Modifier.size(28.dp),
-                            ) { Text("×") }
-                        },
-                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        AssistChip(
+                            onClick = { HelperFeatureStore.setBidAmount(value) },
+                            label = { Text(value.toString()) },
+                        )
+                        TextButton(
+                            onClick = { HelperFeatureStore.removeCustomBid(value) },
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                        ) { Text("删除") }
+                    }
                 }
             }
         }
@@ -326,14 +321,16 @@ fun HelperMemoryPanel(helper: HelperFeatureUiState) {
                         label = "价格",
                         value = manualPrice,
                         modifier = Modifier.weight(1f),
-                        onChange = { manualPrice = it },
-                    )
+                    ) { manualPrice = it }
                     Button(onClick = {
                         manualPrice.toLongOrNull()?.let { HelperFeatureStore.addMemoryRecord(listOf(it)) }
                         manualPrice = ""
                     }) { Text("添加") }
                 }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
                     NteHelperCatalog.redAll.forEach { item ->
                         AssistChip(
                             onClick = { HelperFeatureStore.addMemoryRecord(listOf(item.price)) },
@@ -344,9 +341,7 @@ fun HelperMemoryPanel(helper: HelperFeatureUiState) {
             }
         }
 
-        helper.memory.groups.forEach { group ->
-            MemoryGroupCard(helper, group)
-        }
+        helper.memory.groups.forEach { group -> MemoryGroupCard(helper, group) }
     }
 }
 
@@ -355,13 +350,16 @@ private fun MemoryGroupCard(helper: HelperFeatureUiState, group: HelperMemoryGro
     var renameText by remember(group.name) { mutableStateOf(group.name) }
     var weightText by remember(group.name, group.weight) { mutableStateOf(group.weight.toString()) }
     var showAll by remember(group.name) { mutableStateOf(false) }
-    val records = if (showAll) group.records.withIndex().toList() else group.records.withIndex().toList().takeLast(10)
+    val indexedRecords = group.records.withIndex().toList()
+    val records = if (showAll) indexedRecords else indexedRecords.takeLast(10)
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(group.name, fontWeight = FontWeight.Bold)
-                if (helper.memory.currentGroup == group.name) Text(" · 当前", style = MaterialTheme.typography.labelMedium)
+                if (helper.memory.currentGroup == group.name) {
+                    Text(" · 当前", style = MaterialTheme.typography.labelMedium)
+                }
                 Spacer(Modifier.weight(1f))
                 Text("激活", style = MaterialTheme.typography.labelSmall)
                 Switch(
@@ -376,11 +374,10 @@ private fun MemoryGroupCard(helper: HelperFeatureUiState, group: HelperMemoryGro
                     value = weightText,
                     modifier = Modifier.width(110.dp),
                     decimal = true,
-                    onChange = { text ->
-                        weightText = text
-                        text.toDoubleOrNull()?.let { HelperFeatureStore.setMemoryGroupWeight(group.name, it) }
-                    },
-                )
+                ) { text ->
+                    weightText = text
+                    text.toDoubleOrNull()?.let { HelperFeatureStore.setMemoryGroupWeight(group.name, it) }
+                }
                 OutlinedButton(onClick = { HelperFeatureStore.deleteMemoryGroup(group.name) }) { Text("删除组") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -427,7 +424,10 @@ private fun MemoryRecordRow(groupName: String, index: Int, record: HelperMemoryR
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(record.prices.joinToString(", ") { formatMoney(it) }, style = MaterialTheme.typography.bodySmall)
-                Text("${record.timestamp}${record.source?.let { " · $it" }.orEmpty()}", style = MaterialTheme.typography.labelSmall)
+                Text(
+                    "${record.timestamp}${record.source?.let { " · $it" }.orEmpty()}",
+                    style = MaterialTheme.typography.labelSmall,
+                )
             }
             TextButton(onClick = { editing = true }) { Text("编辑") }
             TextButton(onClick = { HelperFeatureStore.deleteMemoryRecord(groupName, index) }) { Text("删除") }
