@@ -8,11 +8,10 @@ import kotlin.math.min
 /**
  * Normalizes MediaProjection frames before they enter the recognition pipeline.
  *
- * Some Android 16/OEM combinations keep the capture surface in portrait while a
- * landscape game is rendered letterboxed in the middle of that surface. Rotating
- * the full bitmap is wrong in that case because the game pixels are already in the
- * correct orientation. We first locate the active non-black horizontal band and
- * crop to it.
+ * Handles two OEM/Android behaviours observed on the target device:
+ * 1) landscape game pixels letterboxed inside a portrait MediaProjection buffer;
+ * 2) an invalid/app-scoped projection session returning an almost completely
+ *    black frame (sometimes only the navigation gesture bar is visible).
  */
 object FrameNormalizer {
     data class Result(
@@ -31,10 +30,21 @@ object FrameNormalizer {
     private const val MIN_ACTIVE_HEIGHT_RATIO = 0.12f
     private const val EDGE_PADDING_ROWS = 2
 
+    // Blank-frame guard. The failed 2026-09-13 capture had only ~0.015% pixels
+    // above a very low brightness threshold, while a valid warehouse frame had
+    // abundant non-dark pixels. Keep the threshold conservative so dark game
+    // scenes are not rejected accidentally.
+    private const val BLACK_FRAME_SAMPLE_STEP = 12
+    private const val BLACK_FRAME_MIN_NON_DARK_RATIO = 0.005f // 0.5%
+
     fun normalize(input: Bitmap): Result {
         val full = Rect(0, 0, input.width, input.height)
         if (input.width <= 0 || input.height <= 0) {
             return Result(input, full, false, "invalid-size")
+        }
+
+        if (isNearBlackFrame(input)) {
+            return Result(input, full, false, "capture-near-black")
         }
 
         // A true landscape frame is already usable. Avoid extra copies.
@@ -59,7 +69,8 @@ object FrameNormalizer {
         }
 
         closeSmallGaps(activeRows, max(4, input.height / 300))
-        val run = largestTrueRun(activeRows) ?: return Result(input, full, false, "no-active-band")
+        val run = largestTrueRun(activeRows)
+            ?: return Result(input, full, false, "no-active-band")
 
         val top = max(0, run.first - EDGE_PADDING_ROWS)
         val bottomExclusive = min(input.height, run.last + 1 + EDGE_PADDING_ROWS)
@@ -95,6 +106,31 @@ object FrameNormalizer {
             changed = true,
             reason = "letterbox-crop ${input.width}x${input.height} -> ${cropped.width}x${cropped.height}",
         )
+    }
+
+    /**
+     * Detects a projection frame that contains effectively no app/game content.
+     * Sampling is intentional: this runs on the capture hot path.
+     */
+    fun isNearBlackFrame(bitmap: Bitmap): Boolean {
+        var samples = 0
+        var nonDark = 0
+        var y = 0
+        while (y < bitmap.height) {
+            var x = 0
+            while (x < bitmap.width) {
+                val color = bitmap.getPixel(x, y)
+                val r = (color shr 16) and 0xff
+                val g = (color shr 8) and 0xff
+                val b = color and 0xff
+                if (max(r, max(g, b)) > DARK_CHANNEL_THRESHOLD) nonDark++
+                samples++
+                x += BLACK_FRAME_SAMPLE_STEP
+            }
+            y += BLACK_FRAME_SAMPLE_STEP
+        }
+        if (samples == 0) return true
+        return nonDark.toFloat() / samples.toFloat() < BLACK_FRAME_MIN_NON_DARK_RATIO
     }
 
     private fun isActiveRow(bitmap: Bitmap, y: Int): Boolean {
@@ -145,7 +181,9 @@ object FrameNormalizer {
                 currentStart = -1
             }
         }
-        if (currentStart >= 0 && (bestStart < 0 || values.size - currentStart > bestEnd - bestStart + 1)) {
+        if (currentStart >= 0 &&
+            (bestStart < 0 || values.size - currentStart > bestEnd - bestStart + 1)
+        ) {
             bestStart = currentStart
             bestEnd = values.lastIndex
         }
