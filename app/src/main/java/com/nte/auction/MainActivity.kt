@@ -3,8 +3,10 @@ package com.nte.auction
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -65,7 +67,21 @@ class MainActivity : ComponentActivity() {
 
     private fun requestScreenCapture() {
         val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        captureLauncher.launch(manager.createScreenCaptureIntent())
+
+        // Android 14+ 默认的无参 createScreenCaptureIntent() 会允许选择
+        // “单个应用”或“整个屏幕”。仓库识别必须持续读取游戏画面；如果误选
+        // 单个应用（尤其是本助手本身），切回游戏后 MediaProjection 可能只得到
+        // 黑帧/系统手势条，识别器自然无法定位仓库。
+        //
+        // 强制捕获 DEFAULT_DISPLAY，消除这类授权范围歧义。
+        val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            manager.createScreenCaptureIntent(
+                MediaProjectionConfig.createConfigForDefaultDisplay()
+            )
+        } else {
+            manager.createScreenCaptureIntent()
+        }
+        captureLauncher.launch(captureIntent)
     }
 
     private fun requestOrShowOverlay() {
