@@ -137,6 +137,16 @@ class ProjectionCaptureService : Service() {
                 // centered letterboxed band. Crop that active band before recognition;
                 // rotating the full bitmap would destroy the game orientation.
                 val normalized = FrameNormalizer.normalize(cropped)
+
+                // A near-black frame indicates a bad/app-scoped MediaProjection
+                // session rather than a warehouse-layout failure. Do not consume a
+                // pending warehouse snapshot request and do not replace the latest
+                // valid FrameHub frame with invalid capture data.
+                if (normalized.reason == "capture-near-black") {
+                    if (!cropped.isRecycled) cropped.recycle()
+                    return@setOnImageAvailableListener
+                }
+
                 val frame = normalized.bitmap
 
                 if (AuctionStateStore.consumeWarehouseSnapshotRequest()) {
