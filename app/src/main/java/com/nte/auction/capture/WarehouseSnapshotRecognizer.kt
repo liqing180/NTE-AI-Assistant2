@@ -127,7 +127,7 @@ class WarehouseSnapshotRecognizer {
             cellSize = cellSize,
         )
 
-        val items = contours.mapNotNull { contour ->
+        val rawItems = contours.mapNotNull { contour ->
             val itemWidth = (contour.width / cellSize)
                 .roundToInt()
                 .coerceIn(1, 6)
@@ -179,6 +179,7 @@ class WarehouseSnapshotRecognizer {
                 confidence = confidence,
             )
         }.distinctBy { it.stableId }
+        val items = suppressOverlappingItems(rawItems)
 
         return Result(
             columns = columns,
@@ -267,7 +268,9 @@ class WarehouseSnapshotRecognizer {
         val pixelCount = regionWidth * regionHeight
         if (pixelCount <= 0) return emptyList()
 
-        // 取仓库背景亮度的 75 分位做自适应基线；至少 48，避免暗网格/背景被连进来。
+        // 阈值过高会把同一个大藏品内部的高亮区域再次切成小连通域。
+        // 诊断样本中旧算法 p75 + 20 被顶到 68 后，3x3 内部额外产生了一个 2x2。
+        // 改用更靠近背景的 p60，并限制到 57..66：既压住暗网格，又保留物品整体连通性。
         val samples = ArrayList<Int>((regionWidth / 4 + 1) * (regionHeight / 4 + 1))
         var sy = gridTop
         while (sy < gridBottom) {
@@ -279,8 +282,8 @@ class WarehouseSnapshotRecognizer {
             sy += 4
         }
         samples.sort()
-        val p75 = if (samples.isEmpty()) 0 else samples[(samples.size * 3 / 4).coerceAtMost(samples.lastIndex)]
-        val threshold = (p75 + 20).coerceIn(48, 68)
+        val p60 = if (samples.isEmpty()) 0 else samples[(samples.size * 3 / 5).coerceAtMost(samples.lastIndex)]
+        val threshold = (p60 + 4).coerceIn(57, 66)
 
         val foreground = BooleanArray(pixelCount)
         for (ry in 0 until regionHeight) {
@@ -363,6 +366,54 @@ class WarehouseSnapshotRecognizer {
         return contours.sortedWith(compareBy<ItemContour> { it.top }.thenBy { it.left })
     }
 
+    /**
+     * 仓库物品不能占用同一个网格位置。连通域阈值偶尔会在大物品内部再生成一个较小候选，
+     * 这里在网格空间做一次冲突消解：被较大候选完整包含、且置信度没有明显优势的小候选直接丢弃；
+     * 对剩余极少数重叠候选，再按置信度和覆盖面积综合选择。
+     */
+    private fun suppressOverlappingItems(items: List<DetectedItem>): List<DetectedItem> {
+        if (items.size < 2) return items
+
+        val withoutContainedFragments = items.filter { candidate ->
+            items.none { other ->
+                other !== candidate &&
+                    containsGridCells(outer = other, inner = candidate) &&
+                    other.width * other.height > candidate.width * candidate.height &&
+                    other.confidence >= candidate.confidence - CONTAINED_CONFIDENCE_TOLERANCE
+            }
+        }
+
+        val ranked = withoutContainedFragments.sortedWith(
+            compareByDescending<DetectedItem> {
+                it.confidence + (it.width * it.height).toFloat() * GRID_AREA_PRIORITY_WEIGHT
+            }.thenByDescending { it.width * it.height }
+        )
+
+        val kept = mutableListOf<DetectedItem>()
+        for (candidate in ranked) {
+            if (kept.none { overlapsGridCells(candidate, it) }) {
+                kept += candidate
+            }
+        }
+
+        return kept.sortedWith(compareBy<DetectedItem> { it.row }.thenBy { it.column })
+    }
+
+    private fun containsGridCells(outer: DetectedItem, inner: DetectedItem): Boolean {
+        return inner.row >= outer.row &&
+            inner.column >= outer.column &&
+            inner.row + inner.height <= outer.row + outer.height &&
+            inner.column + inner.width <= outer.column + outer.width
+    }
+
+    private fun overlapsGridCells(a: DetectedItem, b: DetectedItem): Boolean {
+        val rowStart = maxOf(a.row, b.row)
+        val rowEnd = minOf(a.row + a.height, b.row + b.height)
+        val columnStart = maxOf(a.column, b.column)
+        val columnEnd = minOf(a.column + a.width, b.column + b.width)
+        return rowStart < rowEnd && columnStart < columnEnd
+    }
+
     private fun classifyQuality(
         pixels: IntArray,
         screenWidth: Int,
@@ -420,5 +471,7 @@ class WarehouseSnapshotRecognizer {
     private companion object {
         const val EDGE_SCROLL_EPSILON = 0.035
         const val EDGE_TOUCH_FRACTION = 0.18f
+        const val CONTAINED_CONFIDENCE_TOLERANCE = 0.12f
+        const val GRID_AREA_PRIORITY_WEIGHT = 0.012f
     }
 }
