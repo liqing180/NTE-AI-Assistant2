@@ -11,7 +11,7 @@
 - `templates/index.html` / `static/style.css`：桌面网页 UI 结构与交互分区。
 - `desktop_app.py` / `启动工具.pyw`：桌面 WebView / Flask 启动壳。
 - `custom_bids.json` / `memory_config.json` / `red_weights.json` / `v1.3.json`：出价、记忆组、红色先验与历史数据格式。
-- `database/` / `picture/`：物品图片资源组织方式。
+- `database/gold_items/` / `database/red_items/` / `picture/`：候选藏品参考图和其他截图资源组织方式。
 
 ## 功能映射
 
@@ -24,6 +24,7 @@
 | Python 金色 DFS | `BoundedCombinationSearch` + `NteHelperAnalyzer` |
 | 红色先验 / 记忆池 | `HelperRedProbabilityModel` + `HelperPersistence` |
 | 10×25 手工仓库框选 | 现有自动仓库识别 + 尺寸/品质候选确认 |
+| `/api/item-image/<quality>/<price>` | `HelperReferenceImageStore` + Compose 图片候选卡片 |
 | 网页分析结果 | Compose “拍卖分析”页 + 悬浮窗快捷区 |
 | 自定义出价按钮 | App 本地持久化自定义金额 |
 
@@ -91,6 +92,18 @@ OCR 直接消费 MediaProjection 的下一帧，不再上传图片到本地 HTTP
 
 Android 端只有用户主动触发时才执行；需要用户自行在系统设置中启用无障碍服务。
 
+### `app/.../helper/HelperReferenceImageStore.kt`
+
+迁移上游“已显示藏品参考图候选”的功能语义：
+
+- 自动仓库识别先给出品质与精确 `宽×高`。
+- 只展示该品质、该尺寸对应的候选藏品。
+- 候选卡片展示参考图、名称、价格和尺寸，点击即确认具体藏品。
+- 没有参考图时自动退化为“暂无参考图”，文字候选仍可正常确认。
+- 支持用户从 App 导入参考图 ZIP，导入后存放在 App 私有目录。
+- ZIP 兼容上游目录：`database/gold_items/<价格>.png`、`database/red_items/<价格>.png`，也兼容 `gold/<价格>.png`、`red/<价格>.png`。
+- 导入过程限制文件类型、单图大小和总图数，并阻止 ZIP 路径穿越。
+
 ### `app/.../helper/HelperFeatureStore.kt`
 
 替代 Flask API 和浏览器全局状态，统一管理：
@@ -112,6 +125,13 @@ Android 端只有用户主动触发时才执行；需要用户自行在系统设
 - `拍卖分析`
 - `记忆池`
 
+“仓库候选确认”区域增加：
+
+- 参考图 ZIP 导入。
+- 当前金/红参考图数量。
+- 按尺寸过滤后的横向图片候选卡片。
+- 点击图片卡片确认具体名称和价格。
+
 游戏悬浮窗增加：
 
 - 识别参数。
@@ -125,7 +145,7 @@ Android 端只有用户主动触发时才执行；需要用户自行在系统设
 2. **不使用 WebView 页面作为主 UI**：改成 Compose，状态通过 StateFlow 驱动。
 3. **不使用 pyautogui**：Android 无障碍手势承担显式自动出价动作。
 4. **仓库识别增强**：上游仓库主要依赖用户在 10×25 网格手工框选；本项目优先使用现有截图自动仓库识别，再允许按尺寸确认具体物品。
-5. **不复制上游图片素材**：尺寸候选不依赖图片即可工作；后续若上游补充明确许可证，可再评估素材导入。
+5. **不随 APK 复制上游图片素材**：上游没有明确 LICENSE；Android 端实现兼容参考图包导入，用户可导入其有权使用的图片，目录格式与上游兼容。
 6. **不内置上游原始历史 JSON**：当前红色先验权重已迁移，新的历史由 App 本地记忆池积累；保留同等的数据模型与学习逻辑。
 
 ## 验证
