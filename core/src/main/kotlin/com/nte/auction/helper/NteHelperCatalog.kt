@@ -14,6 +14,8 @@ data class HelperCatalogItem(
     val price: Long,
     val size: GridSize,
 ) {
+    val width: Int get() = size.width
+    val height: Int get() = size.height
     val cells: Int get() = size.cells
 }
 
