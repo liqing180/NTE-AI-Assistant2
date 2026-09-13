@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">即刻落槌估价</string>
+    <string name="helper_accessibility_label">即刻落槌自动出价</string>
+    <string name="helper_accessibility_description">仅在用户主动点击自动出价时读取当前游戏画面并执行对应的出价点击手势。</string>
+</resources>
